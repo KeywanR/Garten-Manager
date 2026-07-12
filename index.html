@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#356a3f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Mein Garten">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Mein Garten – Gartenmanager</title>
+<style>
+:root{
+  --paper:#f4f6ef; --card:#fffdf8; --ink:#1b271d; --muted:#67735f; --line:#dbe3d4;
+  --leaf:#356a3f; --leaf-soft:#e6f0e4; --leaf-ink:#274f30;
+  --honey:#b8801f; --honey-bg:#fcf1d8;      /* due / attention */
+  --berry:#8a3b52; --berry-bg:#f7e4ea;      /* late / problem */
+  --sky:#3a6485; --sky-bg:#e6eef6;          /* soon */
+  --shadow:0 6px 22px rgba(30,55,35,.09);
+  --radius:16px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);
+  font-family:ui-rounded,"SF Pro Rounded",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  line-height:1.45;-webkit-text-size-adjust:100%}
+.app{max-width:1120px;margin:auto;padding:18px 18px 90px}
+a{color:var(--leaf)}
+
+/* header + season signature */
+.hero{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px}
+.hero h1{font-size:clamp(1.6rem,4.5vw,2.4rem);margin:0;letter-spacing:-.02em}
+.hero .sub{margin:.3rem 0 0;color:var(--muted);font-size:.95rem}
+.season{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:10px 14px;box-shadow:var(--shadow);text-align:right;min-width:150px}
+.season .s-name{font-weight:800;font-size:1.02rem}
+.season .s-date{color:var(--muted);font-size:.82rem;margin-top:2px}
+.season .s-bar{display:flex;gap:2px;margin-top:8px}
+.season .s-bar i{flex:1;height:6px;border-radius:3px;background:var(--line)}
+.season .s-bar i.on{background:var(--leaf)}
+.season .s-bar i.now{background:var(--honey);box-shadow:0 0 0 2px var(--honey-bg)}
+
+/* nav */
+.nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--paper) 92%,transparent);
+  backdrop-filter:blur(10px);display:flex;gap:7px;padding:8px 0 12px;overflow:auto;scrollbar-width:none}
+.nav::-webkit-scrollbar{display:none}
+.nav button{font:inherit;border:1px solid var(--line);background:var(--card);border-radius:999px;
+  padding:9px 15px;font-weight:750;cursor:pointer;white-space:nowrap;color:var(--ink)}
+.nav button.active{background:var(--leaf);color:#fff;border-color:var(--leaf)}
+
+/* stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:6px 0 18px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:var(--shadow)}
+.stat b{display:block;font-size:1.7rem;line-height:1}
+.stat span{color:var(--muted);font-size:.85rem;display:block;margin-top:4px}
+.stat.late{background:var(--berry-bg)} .stat.due{background:var(--honey-bg)}
+.stat.soon{background:var(--sky-bg)} .stat.ok{background:var(--leaf-soft)}
+
+.section-title{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:22px 0 10px}
+.section-title h2{margin:0;font-size:1.18rem;letter-spacing:-.01em}
+.section-title small{color:var(--muted)}
+
+/* tasks */
+.task-list{display:grid;gap:10px}
+.task{background:var(--card);border:1px solid var(--line);border-left:6px solid var(--leaf);
+  border-radius:14px;padding:14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;box-shadow:var(--shadow)}
+.task.late{border-left-color:var(--berry);background:linear-gradient(90deg,var(--berry-bg),var(--card) 26%)}
+.task.due{border-left-color:var(--honey);background:linear-gradient(90deg,var(--honey-bg),var(--card) 26%)}
+.task.soon{border-left-color:var(--sky);background:linear-gradient(90deg,var(--sky-bg),var(--card) 26%)}
+.task h3{margin:0 0 3px;font-size:1.02rem}
+.meta{color:var(--muted);font-size:.88rem}
+.note{font-size:.9rem;margin-top:8px}
+.badge{display:inline-block;border-radius:999px;padding:3px 9px;font-size:.75rem;font-weight:800;
+  margin-right:6px;background:var(--leaf-soft);color:var(--leaf-ink)}
+.fert{margin-top:10px;padding:10px 12px;border-radius:11px;background:var(--leaf-soft);
+  border:1px solid #cfe1c9;font-size:.9rem}
+.fert b{color:var(--leaf-ink)} .fert .switch{display:block;margin-top:4px;color:var(--honey);font-weight:700}
+.actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.btn{font:inherit;border:1px solid #b8c5b9;background:var(--card);border-radius:11px;padding:9px 12px;
+  font-weight:750;cursor:pointer;color:var(--ink)}
+.btn.primary{background:var(--leaf);color:#fff;border-color:var(--leaf)}
+.btn.soft{background:var(--leaf-soft);border-color:#cfe1c9}
+.btn.danger{background:var(--berry-bg);color:var(--berry);border-color:#e6c3ce}
+.btn:hover{filter:brightness(.98)} .btn:active{transform:translateY(1px)}
+.btn:focus-visible,.nav button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
+  outline:3px solid color-mix(in srgb,var(--leaf) 45%,transparent);outline-offset:1px}
+
+/* toolbar */
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px}
+.toolbar input,.toolbar select{font:inherit;border:1px solid var(--line);background:var(--card);
+  border-radius:11px;padding:10px 12px;color:var(--ink)}
+.toolbar input{min-width:200px;flex:1}
+
+/* plant grid */
+.plant-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.plant-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.pc-photo{position:relative;height:150px;background:linear-gradient(135deg,#e6efe3,#f7faf5);
+  display:flex;align-items:center;justify-content:center;cursor:pointer}
+.pc-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.pc-empty{color:var(--muted);text-align:center;font-size:.86rem;padding:12px}
+.pc-health{position:absolute;left:8px;top:8px;background:rgba(255,255,255,.94);border-radius:999px;
+  padding:3px 9px;font-size:.76rem;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.pc-body{padding:13px;display:flex;flex-direction:column;gap:7px;flex:1}
+.pc-body h3{margin:0;font-size:1.02rem}
+.pc-next{background:var(--leaf-soft);border-radius:10px;padding:9px 11px;font-size:.85rem;margin-top:auto}
+.pc-actions{display:flex;gap:7px}
+.pc-actions .btn{flex:1;text-align:center;padding:9px 8px}
+
+/* journal */
+.journal{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.j-row{display:grid;grid-template-columns:120px 1fr;gap:12px;padding:12px 15px;border-bottom:1px solid var(--line)}
+.j-row:last-child{border-bottom:0}
+.j-row .date{font-weight:800;color:var(--leaf-ink);font-size:.9rem}
+
+/* settings */
+.settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow)}
+.panel h3{margin:0 0 6px} .panel p{margin:.4rem 0;color:var(--muted);font-size:.9rem}
+.panel .btn{margin:5px 5px 0 0}
+
+.empty{background:var(--card);border:1px dashed #bcc8bc;border-radius:var(--radius);
+  padding:26px;text-align:center;color:var(--muted)}
+.footer{color:var(--muted);font-size:.82rem;margin:26px 0 8px;text-align:center}
+.hidden{display:none!important}
+
+/* toast */
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(18px);
+  background:#1d271d;color:#fff;padding:11px 17px;border-radius:999px;opacity:0;pointer-events:none;
+  transition:.24s;z-index:60;max-width:90vw;text-align:center;font-size:.92rem}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* plant file modal */
+.pf{position:fixed;inset:0;background:rgba(20,30,22,.55);z-index:50;display:flex;
+  align-items:flex-start;justify-content:center;padding:16px;overflow:auto}
+.pf-panel{width:min(960px,100%);background:var(--paper);border-radius:20px;
+  box-shadow:0 20px 60px rgba(0,0,0,.28);overflow:hidden}
+.pf-head{position:sticky;top:0;z-index:2;background:var(--card);border-bottom:1px solid var(--line);
+  padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.pf-head h2{margin:0;font-size:1.25rem} .pf-head .meta{margin-top:2px}
+.pf-close{border:0;background:var(--leaf-soft);border-radius:999px;width:40px;height:40px;
+  font-size:1.3rem;cursor:pointer;color:var(--leaf-ink)}
+.pf-body{padding:16px}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.fp{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:15px;box-shadow:var(--shadow)}
+.fp.full{grid-column:1/-1} .fp h3{margin:0 0 11px;font-size:1.02rem}
+.field{display:grid;gap:5px;margin-bottom:10px}
+.field label{font-size:.82rem;color:var(--muted);font-weight:700}
+.field input,.field select,.field textarea{font:inherit;width:100%;border:1px solid var(--line);
+  border-radius:10px;padding:10px;background:var(--paper);color:var(--ink)}
+.field textarea{min-height:78px;resize:vertical}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}
+.form-grid .field.full{grid-column:1/-1}
+.timeline{display:grid;gap:9px}
+.tl-item{border-left:4px solid var(--leaf);background:var(--paper);border-radius:10px;padding:10px 12px}
+.tl-item.health{border-left-color:var(--honey)} .tl-item.treatment{border-left-color:var(--sky)}
+.tl-item.problem{border-left-color:var(--berry)}
+.tl-item .when{font-weight:800;font-size:.86rem;color:var(--leaf-ink)}
+.photo-timeline{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.pe{background:var(--paper);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.pe img{width:100%;height:140px;object-fit:cover;display:block}
+.pe .cap{padding:8px;font-size:.82rem}
+.link-danger{border:0;background:transparent;color:var(--berry);cursor:pointer;font-weight:700;padding:0;font-size:.84rem}
+.capture-row{display:flex;gap:8px;flex-wrap:wrap}
+.mini{display:inline-block;padding:3px 8px;border-radius:999px;background:var(--leaf-soft);
+  color:var(--leaf-ink);font-size:.74rem;font-weight:700}
+
+@media(max-width:850px){
+  .stats{grid-template-columns:repeat(2,1fr)} .plant-grid{grid-template-columns:repeat(2,1fr)}
+  .settings,.grid2{grid-template-columns:1fr} .hero{flex-direction:column}
+  .season{text-align:left;width:100%}
+}
+@media(max-width:560px){
+  .app{padding:14px 14px 84px} .plant-grid{grid-template-columns:1fr}
+  .task{grid-template-columns:1fr} .actions{justify-content:flex-start}
+  .j-row{grid-template-columns:1fr;gap:2px} .form-grid{grid-template-columns:1fr}
+  .photo-timeline{grid-template-columns:repeat(2,1fr)} .pf{padding:0}
+  .pf-panel{border-radius:0;min-height:100%}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="hero">
+    <div>
+      <h1>🌿 Mein Garten</h1>
+      <p class="sub">Pflege, Gesundheit und Verlauf deiner Pflanzen</p>
+    </div>
+    <div class="season" id="season"></div>
+  </header>
+
+  <nav class="nav" id="nav">
+    <button data-view="today" class="active">Heute</button>
+    <button data-view="week">Diese Woche</button>
+    <button data-view="plants">Pflanzen</button>
+    <button data-view="journal">Journal</button>
+    <button data-view="data">Daten &amp; KI</button>
+  </nav>
+
+  <main>
+    <section id="view-today">
+      <div class="stats" id="stats"></div>
+      <div id="todayContent"></div>
+    </section>
+    <section id="view-week" class="hidden">
+      <div class="section-title"><h2>Nächste 7 Tage</h2><small>Überfälliges zuerst</small></div>
+      <div id="weekContent"></div>
+    </section>
+    <section id="view-plants" class="hidden">
+      <div class="toolbar">
+        <input id="plantSearch" placeholder="Pflanze suchen …" aria-label="Pflanze suchen">
+        <select id="catFilter" aria-label="Kategorie"><option value="all">Alle Kategorien</option></select>
+      </div>
+      <div class="plant-grid" id="plantGrid"></div>
+    </section>
+    <section id="view-journal" class="hidden">
+      <div class="section-title"><h2>Gartenjournal</h2><small>Neueste zuerst</small></div>
+      <div id="journalContent"></div>
+    </section>
+    <section id="view-data" class="hidden">
+      <div class="settings">
+        <div class="panel">
+          <h3>🤖 Export für Claude (KI-Analyse)</h3>
+          <p>Erstellt eine strukturierte Akte je Pflanze – Pflegeverlauf, Gesundheit und Fotos – die Claude über MCP auswerten kann.</p>
+          <button class="btn primary" onclick="exportDossier()">KI-Akte exportieren</button>
+          <p class="meta" id="dossierInfo"></p>
+        </div>
+        <div class="panel">
+          <h3>Komplettsicherung</h3>
+          <p>Sichert Aufgaben, Gesundheit, Journal und alle Fotos in eine geprüfte Datei.</p>
+          <button class="btn primary" onclick="exportData()">Sicherung exportieren</button>
+          <button class="btn" onclick="importData()">Sicherung importieren</button>
+          <p class="meta" id="backupInfo"></p>
+        </div>
+        <div class="panel">
+          <h3>Lokale Schnappschüsse</h3>
+          <p>Automatisch vor Importen, vor dem Zurücksetzen und regelmäßig bei Änderungen.</p>
+          <button class="btn soft" onclick="createLocalSnapshot('manuell',true)">Schnappschuss erstellen</button>
+          <button class="btn" onclick="restoreLatestSnapshot()">Letzten wiederherstellen</button>
+          <p class="meta" id="snapshotInfo"></p>
+        </div>
+        <div class="panel">
+          <h3>Datenprüfung</h3>
+          <p>Prüft Aufgaben, Datumswerte, Gesundheit, Journal und Fotos auf Fehler.</p>
+          <button class="btn" onclick="runIntegrityCheck(true)">Jetzt prüfen</button>
+          <p class="meta" id="integrityInfo"></p>
+        </div>
+        <div class="panel">
+          <h3>Darstellung</h3>
+          <p>Aufgaben außerhalb ihrer Saison werden automatisch ausgeblendet. In den Pflanzenkarten bleiben sie sichtbar.</p>
+          <button class="btn" onclick="toggleSeasons()" id="seasonToggle"></button>
+        </div>
+        <div class="panel">
+          <h3>Zurücksetzen</h3>
+          <p>Vorher wird automatisch ein Schnappschuss angelegt.</p>
+          <button class="btn danger" onclick="resetApp()">Gartenmanager zurücksetzen</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="footer">Daten bleiben lokal auf diesem Gerät. Version 12 · installierbar als App.</div>
+</div>
+<div class="toast" id="toast"></div>
+<div id="plantFile" class="pf hidden" role="dialog" aria-modal="true"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
