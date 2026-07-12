@@ -229,6 +229,7 @@ function save(scheduleSnapshot=true){
   state=normalizeState(state); state.meta.updated=new Date().toISOString();
   try{localStorage.setItem(APP_KEY,JSON.stringify(state))}
   catch(e){alert('Die lokalen Daten konnten nicht gespeichert werden. Bitte sofort eine Sicherung exportieren.');console.error(e)}
+  if(window.CloudSync)CloudSync.onLocalChange();
   if(scheduleSnapshot){clearTimeout(snapshotTimer);snapshotTimer=setTimeout(()=>createLocalSnapshot('automatisch',false),1200)}
 }
 
@@ -597,6 +598,7 @@ function renderSettings(){
   if(ii)ii.textContent=state.meta?.lastIntegrityAt?`${state.meta.lastIntegrityOk?'✓ Keine erkennbaren Probleme':'⚠ Probleme gefunden'} · geprüft ${new Date(state.meta.lastIntegrityAt).toLocaleString('de-AT')}`:'Noch nicht geprüft';
   if(di)di.textContent=state.meta?.lastDossierAt?`Letzter KI-Export: ${new Date(state.meta.lastDossierAt).toLocaleString('de-AT')}`:'Noch kein KI-Export';
   if(stgl)stgl.textContent=state.showAllSeasons?'Nur saisonale Aufgaben anzeigen':'Auch außersaisonale anzeigen';
+  if(window.CloudSync)CloudSync.renderStatus();
 }
 function toggleSeasons(){state.showAllSeasons=!state.showAllSeasons;save();renderAll()}
 
@@ -781,6 +783,7 @@ async function startApp(){
   renderAll();
   await runIntegrityCheck(false);
   await createLocalSnapshot('automatisch',false);
+  if(window.CloudSync)CloudSync.init();
   if('serviceWorker' in navigator){try{await navigator.serviceWorker.register('service-worker.js')}catch(e){console.warn('SW nicht registriert',e)}}
 }
 startApp();

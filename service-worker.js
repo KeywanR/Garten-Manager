@@ -1,10 +1,11 @@
 /* Mein Garten – offline service worker.
    Precaches the app shell so it runs with no connection. Bump CACHE on changes. */
-const CACHE = 'mein-garten-v12';
+const CACHE = 'mein-garten-v13';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
+  './cloud-sync.js',
   './manifest.webmanifest',
   './icon-32.png',
   './icon-180.png',
@@ -27,6 +28,9 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
+  // Only handle our own origin. Google sign-in / Drive API and other cross-origin
+  // requests must go straight to the network — never cache auth'd or dynamic data.
+  if (new URL(req.url).origin !== self.location.origin) return;
   // App shell: cache-first. Everything else: try cache, fall back to network, then index.
   e.respondWith(
     caches.match(req).then(hit => hit || fetch(req).then(res => {
