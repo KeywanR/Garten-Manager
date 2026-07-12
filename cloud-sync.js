@@ -178,8 +178,6 @@
   }
 
   /* --------------------------------------------------------- sync actions --- */
-  const ts = (v) => Date.parse(v || 0) || 0;
-
   function localIsEmpty() {
     const s = state || {};
     const noHist = !Array.isArray(s.history) || s.history.length === 0;
@@ -189,7 +187,18 @@
     return noHist && noObs && noProf && noPhotos;
   }
 
+  function remoteHasData(remote) {
+    if (!remote) return false;
+    const s = remote.state || {};
+    return (Array.isArray(s.history) && s.history.length > 0)
+      || (Array.isArray(s.observations) && s.observations.length > 0)
+      || (s.profiles && Object.keys(s.profiles).length > 0)
+      || (remote.photos && Object.keys(remote.photos).length > 0);
+  }
+
   async function pushLocal() {
+    await loadPhotos();
+    if (localIsEmpty()) return;                          // never overwrite the cloud with an empty copy
     const payload = await buildPayload();               // {state, photos, checksum, ...}
     await uploadContent(JSON.stringify(payload));
     state.meta.lastCloudPush = Date.now();
@@ -209,16 +218,18 @@
     } finally { applyingRemote = false; }
   }
 
-  // Startup reconciliation: pull, then adopt-or-push based on recency.
+  // Startup reconciliation. Single-editor model: this device (iPad) is the
+  // source of truth. Only ever PULL when this device has no real data of its
+  // own (fresh install or Safari cleared its storage) — recency alone must
+  // never let an emptier cloud copy overwrite real local data.
   async function reconcile() {
+    await loadPhotos();                     // make sure photoCache reflects IndexedDB
     const remote = await downloadRemote();
-    const localT = ts(state.meta && state.meta.updated);
-    const remoteT = remote ? ts(remote.state && remote.state.meta && remote.state.meta.updated) : 0;
-    if (remote && (remoteT > localT || localIsEmpty())) {
-      await adoptRemote(remote);
-      setStatus('Aus Cloud geladen', 'ok');
+    if (localIsEmpty()) {
+      if (remoteHasData(remote)) { await adoptRemote(remote); setStatus('Aus Cloud geladen', 'ok'); }
+      else { setStatus('Verbunden – noch keine Daten', 'ok'); }   // both empty → never push empty
     } else {
-      await pushLocal();
+      await pushLocal();                    // local has data → update the cloud, never pull over it
       setStatus('Gesichert', 'ok');
     }
     initialSyncDone = true;

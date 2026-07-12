@@ -249,7 +249,9 @@ a{color:var(--leaf)}
           <p>Automatisch vor Importen, vor dem Zurücksetzen und regelmäßig bei Änderungen.</p>
           <button class="btn soft" onclick="createLocalSnapshot('manuell',true)">Schnappschuss erstellen</button>
           <button class="btn" onclick="restoreLatestSnapshot()">Letzten wiederherstellen</button>
+          <button class="btn" onclick="renderSnapshotList()">Alle Punkte anzeigen</button>
           <p class="meta" id="snapshotInfo"></p>
+          <div id="snapshotList" style="margin-top:10px"></div>
         </div>
         <div class="panel">
           <h3>Datenprüfung</h3>
