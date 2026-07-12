@@ -673,7 +673,7 @@ async function createLocalSnapshot(reason='automatisch',announce=false){
     const payload=await buildPayload(),db=await photoDB(),record={id:`${now}`,created:new Date(now).toISOString(),reason,payload};
     await new Promise((resolve,reject)=>{const tx=db.transaction('backups','readwrite'),st=tx.objectStore('backups');
       st.put(record);const req=st.getAll();
-      req.onsuccess=()=>{const rows=req.result.sort((a,b)=>b.created.localeCompare(a.created));rows.slice(5).forEach(r=>st.delete(r.id))};
+      req.onsuccess=()=>{const rows=req.result.sort((a,b)=>b.created.localeCompare(a.created));rows.slice(30).forEach(r=>st.delete(r.id))};
       tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close();
     state.meta.lastSnapshotAt=now;state.meta.lastSnapshotReason=reason;save(false);renderSettings();
     if(announce)toast('Schnappschuss erstellt');
@@ -689,6 +689,39 @@ async function restoreLatestSnapshot(){
   await createLocalSnapshot('vor Wiederherstellung',false);
   state=migrateState(snap.payload.state);await restorePhotos(snap.payload.photos||{});
   save(false);renderAll();toast('Schnappschuss wiederhergestellt');
+}
+
+/* Recovery: list every stored snapshot with its content counts so the user can
+   restore an older one that still holds photos / activity, not just the latest. */
+async function listSnapshots(){const db=await photoDB();
+  const rows=await new Promise((resolve,reject)=>{const tx=db.transaction('backups','readonly'),r=tx.objectStore('backups').getAll();
+    r.onsuccess=()=>resolve(r.result||[]);r.onerror=()=>reject(r.error)});db.close();
+  return rows.sort((a,b)=>b.created.localeCompare(a.created));}
+async function renderSnapshotList(){
+  const box=document.getElementById('snapshotList');if(!box)return;
+  const rows=await listSnapshots();
+  if(!rows.length){box.innerHTML='<div class="empty">Keine Wiederherstellungspunkte vorhanden.</div>';return}
+  box.innerHTML=`<div class="journal">${rows.map(s=>{
+    const st=(s.payload&&s.payload.state)||{};
+    const nHist=Array.isArray(st.history)?st.history.length:0;
+    const nObs=Array.isArray(st.observations)?st.observations.length:0;
+    const nProf=st.profiles?Object.keys(st.profiles).length:0;
+    const nPhotos=(s.payload&&s.payload.photos)?Object.keys(s.payload.photos).length:0;
+    const rich=nPhotos>0||nHist>0||nObs>0;
+    return `<div class="j-row"><div class="date">${new Date(s.created).toLocaleString('de-AT')}</div>
+      <div><strong>${esc(s.reason||'automatisch')}</strong>
+      <div class="meta">${nHist} Journal · ${nObs} Beobachtungen · ${nProf} Akten · <b>${nPhotos} Foto${nPhotos===1?'':'s'}</b></div>
+      <button class="btn ${rich?'primary':''}" onclick="restoreSnapshotById('${s.id}')">Diesen wiederherstellen</button></div></div>`;
+  }).join('')}</div>`;
+}
+async function restoreSnapshotById(id){
+  const rows=await listSnapshots(),snap=rows.find(s=>String(s.id)===String(id));
+  if(!snap)return alert('Wiederherstellungspunkt nicht gefunden.');
+  const nPhotos=(snap.payload&&snap.payload.photos)?Object.keys(snap.payload.photos).length:0;
+  if(!confirm(`Wiederherstellungspunkt vom ${new Date(snap.created).toLocaleString('de-AT')} laden?\n\n${nPhotos} Foto(s) enthalten.\n\nDie aktuellen Daten werden vorher gesichert.`))return;
+  await createLocalSnapshot('vor Wiederherstellung',false);
+  state=migrateState(snap.payload.state);await restorePhotos(snap.payload.photos||{});
+  save(false);renderAll();renderSnapshotList();toast('Wiederherstellungspunkt geladen');
 }
 
 async function runIntegrityCheck(announce=false){
