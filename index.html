@@ -228,6 +228,16 @@ a{color:var(--leaf)}
           <p class="meta" id="dossierInfo"></p>
         </div>
         <div class="panel">
+          <h3>☁️ Google Drive Sync</h3>
+          <p>Speichert alle Daten automatisch in einem Ordner „Garten-Manager“ in deinem Google Drive – sichtbar auch am PC. Änderungen am iPad werden nach kurzer Zeit hochgeladen.</p>
+          <button class="btn primary" id="cloudConnectBtn" onclick="cloudDisconnect()">Mit Google Drive verbinden</button>
+          <span id="cloudActions" style="display:none">
+            <button class="btn" onclick="cloudSyncNow()">Jetzt sichern</button>
+            <button class="btn soft" onclick="cloudPullNow()">Aus Cloud laden</button>
+          </span>
+          <p class="meta" id="cloudInfo"></p>
+        </div>
+        <div class="panel">
           <h3>Komplettsicherung</h3>
           <p>Sichert Aufgaben, Gesundheit, Journal und alle Fotos in eine geprüfte Datei.</p>
           <button class="btn primary" onclick="exportData()">Sicherung exportieren</button>
@@ -266,6 +276,8 @@ a{color:var(--leaf)}
 <div class="toast" id="toast"></div>
 <div id="plantFile" class="pf hidden" role="dialog" aria-modal="true"></div>
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="app.js"></script>
+<script src="cloud-sync.js"></script>
 </body>
 </html>
