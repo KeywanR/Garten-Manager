@@ -9,7 +9,9 @@ const LEGACY_KEY='duengekalender_v1', APP_KEY='gartenmanager_v2';
 const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
 
 /* ---------------------------------------------------------------- plants ---- */
-const plants=[
+/* Built-in garden inventory. User-added plants live in state.customPlants /
+   state.customTasks and are merged in by rebuildCatalog(). */
+const basePlants=[
  {id:'tomaten',name:'Tomaten',cat:'Gemüse',note:'Bei Fruchtbildung weniger Stickstoff, stärker kaliumbetont düngen.'},
  {id:'chili',name:'Chili',cat:'Gemüse',note:'Nicht überdüngen – sonst viel Blatt und wenig Frucht.'},
  {id:'sellerie',name:'Sellerie',cat:'Gemüse',note:'Starkzehrer, gleichmäßig feucht halten.'},
@@ -43,6 +45,7 @@ const plants=[
  {id:'hecke',name:'Liguster-Hecke',cat:'Hecke',note:'Robust und schnittverträglich. 2–3 Formschnitte pro Saison halten sie dicht. Auf Thripse (silbrige Blätter), Miniermotte und Blattläuse achten.'},
  {id:'garten',name:'Garten (allgemein)',cat:'Allgemein',note:'Gartenweite Erinnerungen, die zu keiner einzelnen Pflanze gehören.'}
 ];
+let plants=basePlants.slice();
 
 /* ------------------------------------------------------ default health ------ */
 const healthDefaults={
@@ -53,7 +56,7 @@ const healthDefaults={
 
 /* ------------------------------------------------------------- care tasks --- */
 /* [plantId, id, title, intervalDays, months[], note?, optional?] */
-const defs=[
+const baseDefs=[
  ['tomaten','duengen','Kaliumbetont düngen',10,[4,5,6,7,8,9],'Nach Fruchtansatz kaliumbetonten Tomatendünger verwenden.'],
  ['tomaten','ausgeizen','Ausgeizen und aufbinden',7,[5,6,7,8,9],'Seitentriebe entfernen und Haupttrieb locker anbinden.'],
  ['tomaten','krankheit','Auf Braunfäule kontrollieren',5,[5,6,7,8,9],'Vor allem nach feuchtem Wetter Blätter prüfen.'],
@@ -117,6 +120,62 @@ const defs=[
  ['hecke','duengen','Bei Bedarf leicht düngen',365,[4],'Etablierter Liguster braucht kaum Dünger; nur bei schwachem Wuchs oder nach starkem Rückschnitt eine leichte Frühjahrsgabe.',true],
  ['garten','winterschutz','Kübel winterfest machen',365,[11],'Töpfe der winterharten Kübelgehölze (Hortensie, Ahorn, Viburnum, Spindelstrauch, Birne, Felsenbirne, Weichsel) mit Vlies/Jute umwickeln und geschützt an eine Wand rücken. Die Pflanzen sind hart, die Wurzelballen im Topf nicht.']
 ].map(([plantId,id,title,interval,months,note='',optional=false])=>({id:`${plantId}:${id}`,plantId,title,interval,months,note,optional}));
+let defs=baseDefs.slice();
+
+/* ----------------------------------------------- custom plants (catalog) ---- */
+const ALL_MONTHS=[1,2,3,4,5,6,7,8,9,10,11,12];
+function slugify(s){return String(s).toLowerCase()
+  .replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue').replace(/ß/g,'ss')
+  .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')}
+
+/* Merge built-in catalog with user-added plants/tasks from state. Runs on
+   every renderAll, so any state change (import, cloud pull, KI inbox) is
+   reflected immediately. */
+function rebuildCatalog(){
+  const cp=(state.customPlants||[]).filter(p=>p&&p.id&&p.name&&!basePlants.some(b=>b.id===p.id));
+  plants=[...basePlants,...cp.map(p=>({id:p.id,name:p.name,cat:p.cat||'Zimmerpflanzen',note:p.note||''}))];
+  const ct=(state.customTasks||[]).filter(t=>t&&t.id&&t.plantId&&!baseDefs.some(b=>b.id===t.id));
+  defs=[...baseDefs,...ct.map(t=>({id:t.id,plantId:t.plantId,title:t.title||'Pflege',
+    interval:Number(t.interval)||14,
+    months:Array.isArray(t.months)&&t.months.length?t.months.filter(m=>m>=1&&m<=12):ALL_MONTHS,
+    note:t.note||'',optional:!!t.optional}))];
+  refreshCatFilter();
+}
+
+function refreshCatFilter(){
+  const sel=document.getElementById('catFilter');if(!sel)return;
+  const cur=sel.value||'all';
+  const cats=[...new Set(plants.map(p=>p.cat))].sort();
+  sel.innerHTML='<option value="all">Alle Kategorien</option>'+cats.map(c=>`<option>${esc(c)}</option>`).join('');
+  sel.value=(cur==='all'||cats.includes(cur))?cur:'all';
+}
+
+function addDefaultTasksFor(id,cat){
+  state.customTasks=state.customTasks||[];
+  const t=cat==='Zimmerpflanzen'
+    ?[['wasser','Gießbedarf prüfen',7,ALL_MONTHS,'Fingerprobe: obere 2–3 cm Erde trocken → gießen. Staunässe vermeiden.'],
+      ['duengen','Leicht düngen',14,[3,4,5,6,7,8,9,10],'Nur in der Wachstumszeit; halbe Herstellerdosierung.'],
+      ['kontrolle','Auf Schädlinge kontrollieren',30,ALL_MONTHS,'Blattunterseiten auf Spinnmilben, Woll- und Schildläuse prüfen (v. a. bei trockener Heizungsluft).']]
+    :[['wasser','Gießbedarf prüfen',7,[4,5,6,7,8,9],'Boden prüfen, bei Trockenheit tiefgründig wässern.'],
+      ['duengen','Düngen',21,[4,5,6,7,8],'Mäßig düngen, auf feuchte Erde.']];
+  t.forEach(([type,title,interval,months,note])=>{const tid=`${id}:${type}`;
+    if(!state.customTasks.some(x=>x.id===tid)&&!baseDefs.some(b=>b.id===tid))
+      state.customTasks.push({id:tid,plantId:id,title,interval,months,note,optional:false})});
+}
+
+function addPlantDialog(){
+  const name=(prompt('Name der neuen Pflanze:')||'').trim();if(!name)return;
+  const cats=[...new Set([...plants.map(p=>p.cat),'Zimmerpflanzen'])].filter(c=>c!=='Allgemein').sort();
+  const pick=prompt('Kategorie wählen (Nummer):\n'+cats.map((c,i)=>`${i+1} ${c}`).join('\n'),String(cats.indexOf('Zimmerpflanzen')+1));
+  const cat=cats[Number(pick)-1]||'Zimmerpflanzen';
+  const note=(prompt('Notiz (optional):')||'').trim();
+  let id=slugify(name)||'pflanze';let n=2;while(plant(id))id=`${slugify(name)}-${n++}`;
+  state.customPlants=state.customPlants||[];
+  state.customPlants.push({id,name,cat,note});
+  addDefaultTasksFor(id,cat);
+  rebuildCatalog();initializeCareTasks();save();renderAll();
+  toast(`${name} hinzugefügt`);openPlantFile(id);
+}
 
 /* --------------------------------------------------------- fertilizer plans - */
 const fertilizerPlans={
@@ -170,7 +229,7 @@ const diff=s=>Math.round((parse(s)-parse(today()))/86400000);
 const fmt=s=>s?new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}).format(parse(s)):'—';
 const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(parse(v).getTime());
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -181,6 +240,8 @@ function normalizeState(raw){
   out.profiles=(x.profiles&&typeof x.profiles==='object'&&!Array.isArray(x.profiles))?x.profiles:{};
   out.observations=Array.isArray(x.observations)?x.observations:[];
   out.photoMeta=(x.photoMeta&&typeof x.photoMeta==='object'&&!Array.isArray(x.photoMeta))?x.photoMeta:{};
+  out.customPlants=Array.isArray(x.customPlants)?x.customPlants:[];
+  out.customTasks=Array.isArray(x.customTasks)?x.customTasks:[];
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
   out.dataVersion=DATA_VERSION;
@@ -380,6 +441,10 @@ function renderPlants(){
       </div>
     </article>`;
   }).join('')||'<div class="empty">Keine passende Pflanze gefunden.</div>';
+  document.getElementById('plantGrid').insertAdjacentHTML('beforeend',
+    `<article class="plant-card" onclick="addPlantDialog()" style="cursor:pointer">
+      <div class="pc-empty" style="padding:2.5rem 1rem;text-align:center">➕<br><strong>Neue Pflanze hinzufügen</strong><br><span class="meta">z. B. Zimmerpflanzen</span></div>
+    </article>`);
 }
 
 function renderJournal(){
@@ -434,9 +499,34 @@ function plantTimeline(id){
    inbox. Profile texts are appended with a dated [KI …] tag, never overwritten.
    Returns true if anything changed. */
 function applyKiDiagnosis(e){
-  if(!e||!plant(e.plantId))return false;
+  if(!e)return false;
   const d=isDateString(e.date)?e.date:today();
   let changed=false;
+  // addPlant: create a user plant (e.g. Zimmerpflanze identified from a photo).
+  if(e.addPlant&&e.addPlant.name){
+    const ap=e.addPlant,id=ap.id||slugify(ap.name);
+    if(id&&!plant(id)){
+      state.customPlants=state.customPlants||[];
+      state.customPlants.push({id,name:ap.name,cat:ap.cat||'Zimmerpflanzen',note:ap.note||''});
+      if(!(Array.isArray(e.addTasks)&&e.addTasks.length))addDefaultTasksFor(id,ap.cat||'Zimmerpflanzen');
+      changed=true;
+    }
+    e={...e,plantId:e.plantId||id};
+  }
+  // addTasks: tailored care schedule for the plant.
+  if(Array.isArray(e.addTasks)&&e.plantId){
+    state.customTasks=state.customTasks||[];
+    for(const t of e.addTasks){
+      if(!t||!t.type)continue;
+      const tid=`${e.plantId}:${t.type}`;
+      if(state.customTasks.some(x=>x.id===tid)||baseDefs.some(b=>b.id===tid))continue;
+      state.customTasks.push({id:tid,plantId:e.plantId,title:t.title||'Pflege',
+        interval:Number(t.interval)||14,months:t.months,note:t.note||'',optional:!!t.optional});
+      changed=true;
+    }
+  }
+  if(changed){rebuildCatalog();initializeCareTasks()}
+  if(!plant(e.plantId))return changed;
   if(e.status||e.reason){
     const cur=healthFor(e.plantId);
     state.health[e.plantId]={status:e.status||cur.status,reason:e.reason!==undefined?e.reason:cur.reason,updated:d};
@@ -636,7 +726,7 @@ function renderSettings(){
 }
 function toggleSeasons(){state.showAllSeasons=!state.showAllSeasons;save();renderAll()}
 
-function renderAll(){renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings()}
+function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings()}
 
 function switchView(v){
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
@@ -864,11 +954,11 @@ document.getElementById('plantFile').addEventListener('click',e=>{if(e.target.id
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closePlantFile()});
 document.getElementById('plantSearch').addEventListener('input',renderPlants);
 document.getElementById('catFilter').addEventListener('change',renderPlants);
-const cats=[...new Set(plants.map(p=>p.cat))].sort();
-document.getElementById('catFilter').innerHTML+=cats.map(c=>`<option>${esc(c)}</option>`).join('');
+refreshCatFilter();
 
 async function startApp(){
   load();
+  rebuildCatalog();
   await migrateOldPhotoDB();
   await loadPhotos();
   cleanupV12(false);

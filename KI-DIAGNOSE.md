@@ -49,6 +49,35 @@ Regeln:
   (datiert), nie überschrieben.
 - Alle Felder außer `id` und `plantId` sind optional.
 
+## Pflanzen anlegen (seit v21)
+
+Ein Entry kann statt/zusätzlich zu einer Diagnose auch eine neue Pflanze
+anlegen (z. B. Zimmerpflanze, die Claude aus einem Foto identifiziert hat):
+
+```json
+{
+  "id": "ki-2026-07-19-add-monstera",
+  "addPlant": {
+    "id": "monstera",
+    "name": "Monstera deliciosa",
+    "cat": "Zimmerpflanzen",
+    "note": "Heller Standort ohne direkte Sonne."
+  },
+  "addTasks": [
+    { "type": "wasser", "title": "Gießbedarf prüfen", "interval": 7,
+      "months": [1,2,3,4,5,6,7,8,9,10,11,12], "note": "Fingerprobe." }
+  ]
+}
+```
+
+- `addPlant.id` optional (sonst Slug aus dem Namen); existierende ids werden
+  übersprungen. `cat` default: `Zimmerpflanzen`.
+- Ohne `addTasks` bekommt die Pflanze Standard-Aufgaben ihrer Kategorie
+  (Zimmerpflanzen: Gießcheck 7 T, Düngen 14 T Mär–Okt, Schädlingscheck 30 T).
+- `plantId` im selben Entry darf entfallen — Diagnose-Felder (`status`,
+  `observation`, `profile`) beziehen sich dann auf die neue Pflanze.
+- In der App selbst: Pflanzen-Ansicht → Karte "➕ Neue Pflanze hinzufügen".
+
 ## Voraussetzung
 
 App-Scope umfasst `drive.readonly` (seit v20), sonst sind Connector-Dateien
