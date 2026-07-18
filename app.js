@@ -766,7 +766,7 @@ function buildPlantDossier(id){
   const history=plantTimeline(id).map(o=>({date:o.date,type:o.type,text:o.text}));
   const photos=Object.entries(state.photoMeta||{}).filter(([,m])=>m.plantId===id)
     .map(([k,m])=>({key:k,date:m.date,caption:m.caption||'',isCover:!!m.cover,
-      driveFile:gmPhotoFileName(k,photoCache[k])}))
+      driveFile:gmDrivePhotoName(k,photoCache[k])}))
     .sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   return {
     plant:{id:p.id,name:p.name,category:p.cat,generalNote:p.note},
@@ -777,11 +777,22 @@ function buildPlantDossier(id){
     photos
   };
 }
-/* Drive filename for a photo: sanitised key + extension from the data URL.
+/* Drive filename for a photo: sanitised key + photo date + extension. The date
+   suffix keeps replaced cover images apart, so every version survives in Drive
+   as its own file. No date (legacy uploads) = plain sanitised key.
    Shared by the dossier (driveFile references) and cloud-sync photo uploads. */
-function gmPhotoFileName(key,dataUrl){
+function gmPhotoFileName(key,date,dataUrl){
   const ext=dataUrl&&dataUrl.startsWith('data:image/png')?'png':'jpg';
-  return String(key).replace(/[^a-zA-Z0-9_-]+/g,'_')+'.'+ext;
+  return String(key).replace(/[^a-zA-Z0-9_-]+/g,'_')+(date?'_'+date:'')+'.'+ext;
+}
+/* Actual Drive filename for an already-uploaded photo, from cloud-sync's local
+   index; falls back to the legacy (undated) name for pre-index uploads. */
+function gmDrivePhotoName(key,dataUrl){
+  try{
+    const idx=JSON.parse(localStorage.getItem('gm_drive_photo_index')||'{}');
+    if(idx[key]&&idx[key].name)return idx[key].name;
+  }catch(e){}
+  return gmPhotoFileName(key,'',dataUrl);
 }
 /* includePhotos=false builds a light dossier for automatic cloud upload: photo
    base64 data already syncs inside gartenmanager-data.json, so the cloud copy
@@ -793,7 +804,7 @@ async function buildDossierPayload(includePhotos){
     format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
     readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen.'+(includePhotos
       ?' Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).'
-      :' Jedes Foto liegt als eigene Bilddatei im Drive-Unterordner "photos/" (Dateiname = photos[].driveFile); dort bleiben auch später in der App gelöschte Fotos als Verlauf erhalten.'),
+      :' Jedes Foto liegt als eigene Bilddatei im Drive-Unterordner "photos/" (Dateiname = photos[].driveFile). Der Ordner ist ein reines Archiv: auch in der App gelöschte Fotos und ersetzte Titelbilder bleiben dort als Verlauf erhalten (Titelbild-Versionen = frühere Bilder der Fotohistorie).'),
     plants:dossiers
   };
   if(includePhotos)payload.photoData=photoCache;
