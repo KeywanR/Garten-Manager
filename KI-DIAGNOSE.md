@@ -78,6 +78,25 @@ anlegen (z. B. Zimmerpflanze, die Claude aus einem Foto identifiziert hat):
   `observation`, `profile`) beziehen sich dann auf die neue Pflanze.
 - In der App selbst: Pflanzen-Ansicht → Karte "➕ Neue Pflanze hinzufügen".
 
+## Fotos mitliefern (seit v22)
+
+Claude kann einem Entry ein Foto mitgeben: erst das Bild in den
+Drive-Unterordner `photos/` hochladen (Namensschema `<plantId>_<datum>.<ext>`),
+dann im Entry referenzieren:
+
+```json
+{
+  "id": "ki-2026-07-19-monstera-foto",
+  "plantId": "monstera",
+  "photo": { "file": "monstera_2026-07-19.jpg", "caption": "Erstfoto (KI)", "cover": true }
+}
+```
+
+- `cover: true` → wird Titelbild, falls die Pflanze noch keines hat; sonst
+  (und bei `cover: false`) Verlaufsfoto mit Journal-Eintrag.
+- Die App lädt das Bild beim Sync herunter und speichert es lokal wie ein
+  selbst aufgenommenes Foto; der Foto-Index verhindert ein Wieder-Hochladen.
+
 ## Voraussetzung
 
 App-Scope umfasst `drive.readonly` (seit v20), sonst sind Connector-Dateien
