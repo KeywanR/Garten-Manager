@@ -249,45 +249,45 @@
     return (await res.json()).id;
   }
 
+  // Append-only: a changed image under a known key (e.g. a replaced cover)
+  // gets a NEW date-stamped file; the previous one stays in Drive as history.
   async function uploadPhotoFile(key, dataUrl) {
     await ensurePhotosFolder();
-    const name = gmPhotoFileName(key, dataUrl);
+    const metaDate = ((state.photoMeta || {})[key] || {}).date || '';
+    const name = gmPhotoFileName(key, metaDate, dataUrl);
     const blob = dataUrlToBlob(dataUrl);
-    let id = (photoIndex[key] && photoIndex[key].id) || '';
-    if (!id) {   // adopt an existing Drive file of the same name before creating one
+    let id = '';
+    if (!photoIndex[key]) {   // first sight of this key: adopt a same-name Drive file
       const found = await driveList(
         "name='" + name + "' and '" + photosFolderId + "' in parents and trashed=false");
       if (found.length) id = found[0].id;
     }
     if (!id) id = await createPhotoFile(name);
-    const mediaUrl = function (fid) {
-      return 'https://www.googleapis.com/upload/drive/v3/files/' + fid + '?uploadType=media&fields=id';
-    };
-    try {
-      await apiFetch(mediaUrl(id), { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
-    } catch (e) {
-      if (String(e.message).indexOf('404') !== -1) {   // stale id: file was deleted in Drive
-        id = await createPhotoFile(name);
-        await apiFetch(mediaUrl(id), { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
-      } else throw e;
-    }
-    photoIndex[key] = { id: id, fp: dataUrl.length };
+    const mediaUrl = 'https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media&fields=id';
+    await apiFetch(mediaUrl, { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
+    photoIndex[key] = { id: id, fp: dataUrl.length, name: name };
     localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
   }
 
   // Upload photos that are new or changed since the last sync. Photos deleted
-  // in the app are deliberately left in Drive — they are the history.
+  // in the app are deliberately left in Drive — they are the history. The
+  // in-flight guard keeps overlapping pushes from double-creating files.
+  let photoSyncRunning = false;
   async function syncPhotos() {
-    await loadPhotos();
-    const keys = Object.keys(photoCache || {});
-    for (const k of keys) {
-      const du = photoCache[k];
-      if (typeof du !== 'string' || !du.startsWith('data:image/')) continue;
-      const rec = photoIndex[k];
-      if (rec && rec.fp === du.length) continue;         // unchanged since last upload
-      try { await uploadPhotoFile(k, du); }
-      catch (e) { console.warn('Foto-Upload übersprungen:', k, e); break; }   // token/network: retry next sync
-    }
+    if (photoSyncRunning) return;
+    photoSyncRunning = true;
+    try {
+      await loadPhotos();
+      const keys = Object.keys(photoCache || {});
+      for (const k of keys) {
+        const du = photoCache[k];
+        if (typeof du !== 'string' || !du.startsWith('data:image/')) continue;
+        const rec = photoIndex[k];
+        if (rec && rec.fp === du.length) continue;       // unchanged since last upload
+        try { await uploadPhotoFile(k, du); }
+        catch (e) { console.warn('Foto-Upload übersprungen:', k, e); break; }   // token/network: retry next sync
+      }
+    } finally { photoSyncRunning = false; }
   }
 
   async function downloadRemote() {
@@ -321,15 +321,15 @@
     await uploadContent(JSON.stringify(payload));
     state.meta.lastCloudPush = Date.now();
     save(false);
-    // KI-Akte rides along on every push; failure must not break the data sync.
+    // Photo history first, so the dossier's driveFile names reflect what was
+    // actually uploaded; neither step may break the data sync.
+    try { await syncPhotos(); } catch (e) { console.warn('Foto-Sync übersprungen:', e); }
     try {
       const ki = await buildDossierPayload(false);
       await uploadKiAkte(JSON.stringify(ki, null, 2));
       state.meta.lastDossierAt = ki.generated;
       save(false);
     } catch (e) { console.warn('KI-Akte-Upload übersprungen:', e); }
-    // Photo history: individually reachable image files in photos/.
-    try { await syncPhotos(); } catch (e) { console.warn('Foto-Sync übersprungen:', e); }
   }
 
   async function adoptRemote(remote) {
