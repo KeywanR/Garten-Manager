@@ -776,16 +776,25 @@ function buildPlantDossier(id){
     photos
   };
 }
+/* includePhotos=false builds a light dossier for automatic cloud upload: photo
+   base64 data already syncs inside gartenmanager-data.json, so the cloud copy
+   only references photos by key instead of doubling every upload. */
+async function buildDossierPayload(includePhotos){
+  await loadPhotos();
+  const dossiers=plants.filter(p=>p.id!=='garten').map(p=>buildPlantDossier(p.id));
+  const payload={
+    format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
+    readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen.'+(includePhotos
+      ?' Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).'
+      :' Bilddaten (Base64) liegen in gartenmanager-data.json unter "photos" (Schlüssel = photos[].key).'),
+    plants:dossiers
+  };
+  if(includePhotos)payload.photoData=photoCache;
+  return payload;
+}
 async function exportDossier(){
   try{
-    await loadPhotos();
-    const dossiers=plants.filter(p=>p.id!=='garten').map(p=>buildPlantDossier(p.id));
-    const payload={
-      format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
-      readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen. Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).',
-      plants:dossiers,
-      photoData:photoCache
-    };
+    const payload=await buildDossierPayload(true);
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=url;a.download=`gartenmanager-ki-akte-${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
     state.meta.lastDossierAt=new Date().toISOString();save(false);renderSettings();

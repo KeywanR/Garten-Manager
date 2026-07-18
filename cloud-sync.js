@@ -15,8 +15,15 @@
    Safari cleared its storage); otherwise PUSH. An emptier copy can never
    overwrite real data, in either direction.
 
-   Depends on app.js globals: state, buildPayload, migrateState,
-   restorePhotos, cleanupV12, save, renderAll, toast, photoCache, loadPhotos.
+   Alongside the data file, every push also regenerates and uploads the
+   KI-Akte (gartenmanager-ki-akte.json, photo data excluded — it lives in the
+   data file) so the AI dossier in Drive is always current without manual
+   export. When the app goes to background, a pending debounced upload is
+   flushed immediately — the closest iOS lets a PWA get to "save on exit".
+
+   Depends on app.js globals: state, buildPayload, buildDossierPayload,
+   migrateState, restorePhotos, cleanupV12, save, renderAll, toast,
+   photoCache, loadPhotos.
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
@@ -24,9 +31,11 @@
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const FOLDER_NAME = 'Garten-Manager';
   const FILE_NAME = 'gartenmanager-data.json';
+  const KI_FILE_NAME = 'gartenmanager-ki-akte.json';
   const LS_ENABLED = 'gm_cloud_enabled';
   const LS_FOLDER = 'gm_drive_folder_id';
   const LS_FILE = 'gm_drive_file_id';
+  const LS_KI_FILE = 'gm_drive_ki_file_id';
   const SS_TOKEN = 'gm_at', SS_TOKEN_EXP = 'gm_at_exp';
   const SS_STATE = 'gm_oauth_state', SS_RESUME = 'gm_oauth_resume';
   const UPLOAD_DEBOUNCE = 4000;
@@ -36,6 +45,7 @@
   let pendingResume = '';           // action to finish after returning from Google
   let folderId = localStorage.getItem(LS_FOLDER) || '';
   let fileId = localStorage.getItem(LS_FILE) || '';
+  let kiFileId = localStorage.getItem(LS_KI_FILE) || '';
   let uploadTimer = null;
   let initialSyncDone = false;
   let applyingRemote = false;
@@ -144,28 +154,52 @@
     return fileId;
   }
 
-  async function uploadContent(content) {
+  // Generic create-or-update of a JSON file in the app folder; returns the id.
+  async function uploadJson(name, content, existingId) {
     await ensureFolder();
     const boundary = 'gm_boundary_' + Math.random().toString(36).slice(2);
-    const meta = fileId
-      ? { name: FILE_NAME, mimeType: 'application/json' }
-      : { name: FILE_NAME, mimeType: 'application/json', parents: [folderId] };
+    const meta = existingId
+      ? { name: name, mimeType: 'application/json' }
+      : { name: name, mimeType: 'application/json', parents: [folderId] };
     const body =
       '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
       JSON.stringify(meta) +
       '\r\n--' + boundary + '\r\nContent-Type: application/json\r\n\r\n' +
       content +
       '\r\n--' + boundary + '--';
-    const url = fileId
-      ? 'https://www.googleapis.com/upload/drive/v3/files/' + fileId + '?uploadType=multipart&fields=id'
+    const url = existingId
+      ? 'https://www.googleapis.com/upload/drive/v3/files/' + existingId + '?uploadType=multipart&fields=id'
       : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id';
     const res = await apiFetch(url, {
-      method: fileId ? 'PATCH' : 'POST',
+      method: existingId ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'multipart/related; boundary=' + boundary },
       body
     });
-    const out = await res.json();
-    if (out.id) { fileId = out.id; localStorage.setItem(LS_FILE, fileId); }
+    return (await res.json()).id || existingId;
+  }
+
+  async function uploadContent(content) {
+    fileId = await uploadJson(FILE_NAME, content, fileId);
+    if (fileId) localStorage.setItem(LS_FILE, fileId);
+  }
+
+  // KI-Akte: adopt an existing Drive file of the same name before creating one.
+  async function uploadKiAkte(content) {
+    if (!kiFileId) {
+      await ensureFolder();
+      const found = await driveList(
+        "name='" + KI_FILE_NAME + "' and '" + folderId + "' in parents and trashed=false");
+      if (found.length) kiFileId = found[0].id;
+    }
+    try {
+      kiFileId = await uploadJson(KI_FILE_NAME, content, kiFileId);
+    } catch (e) {
+      if (String(e.message).indexOf('404') !== -1) {   // stale id: file was deleted in Drive
+        kiFileId = '';
+        kiFileId = await uploadJson(KI_FILE_NAME, content, '');
+      } else throw e;
+    }
+    if (kiFileId) localStorage.setItem(LS_KI_FILE, kiFileId);
   }
 
   async function downloadRemote() {
@@ -199,6 +233,13 @@
     await uploadContent(JSON.stringify(payload));
     state.meta.lastCloudPush = Date.now();
     save(false);
+    // KI-Akte rides along on every push; failure must not break the data sync.
+    try {
+      const ki = await buildDossierPayload(false);
+      await uploadKiAkte(JSON.stringify(ki, null, 2));
+      state.meta.lastDossierAt = ki.generated;
+      save(false);
+    } catch (e) { console.warn('KI-Akte-Upload übersprungen:', e); }
   }
 
   async function adoptRemote(remote) {
@@ -309,6 +350,18 @@
         .catch(e => { console.error(e); setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); });
     }, UPLOAD_DEBOUNCE);
   }
+
+  /* ---------------------------------------------- background flush (iOS) ---- */
+  // iOS never fires a "terminating" event for PWAs. Going to background is the
+  // last reliable moment — if a debounced upload is still pending, fire it now.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    if (!enabled() || !initialSyncDone || applyingRemote || !tokenValid()) return;
+    if (!uploadTimer) return;                            // nothing pending
+    clearTimeout(uploadTimer); uploadTimer = null;
+    pushLocal().then(() => setStatus('Gesichert', 'ok'))
+      .catch(e => { console.warn('Hintergrund-Sicherung', e); setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); });
+  });
 
   /* -------------------------------------------------------------- startup --- */
   async function init() {
