@@ -620,6 +620,24 @@ async function deleteTimelinePhoto(key,id){if(!confirm('Dieses Verlaufsfoto lös
   state.observations=state.observations.filter(o=>o.photoKey!==key);
   save();openPlantFile(id);}
 
+/* Import a photo delivered through the KI inbox (already fetched from Drive by
+   cloud-sync). Becomes the cover if the plant has none, otherwise a timeline
+   photo. Returns the storage key, or '' if nothing was imported. */
+async function importKiPhoto(plantId,dataUrl,caption,asCover,date){
+  if(!plant(plantId)||typeof dataUrl!=='string'||!dataUrl.startsWith('data:image/'))return '';
+  const d=isDateString(date)?date:today();
+  if(asCover&&!photoCache[plantId]){
+    await putPhoto(plantId,dataUrl);
+    state.photoMeta[plantId]={plantId,date:d,caption:caption||'Titelbild',cover:true};
+    return plantId;
+  }
+  const key=`timeline|${plantId}|${Date.now()}`;
+  await putPhoto(key,dataUrl);
+  state.photoMeta[key]={plantId,date:d,caption:caption||'KI-Foto',cover:false};
+  state.observations.unshift({id:`obs-${Date.now()}`,plantId,date:d,type:'Foto',text:caption||'KI-Foto',photoKey:key});
+  return key;
+}
+
 /* -------------------------------------------------------- plant file modal -- */
 function updateHealthFromFile(id){
   const status=document.getElementById('file-health-status').value;

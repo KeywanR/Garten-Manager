@@ -32,8 +32,8 @@
    push carries them back to Drive. Schema: KI-DIAGNOSE.md in the repo.
 
    Depends on app.js globals: state, buildPayload, buildDossierPayload,
-   gmPhotoFileName, applyKiDiagnosis, migrateState, restorePhotos, cleanupV12,
-   save, renderAll, toast, photoCache, loadPhotos.
+   gmPhotoFileName, applyKiDiagnosis, importKiPhoto, slugify, migrateState,
+   restorePhotos, cleanupV12, save, renderAll, toast, photoCache, loadPhotos.
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
@@ -373,6 +373,22 @@
   }
 
   /* ------------------------------------------------ KI diagnosis inbox ------ */
+  // Fetch an image Claude placed in the photos/ folder and return it as a
+  // data URL plus its Drive id, or null if it isn't there.
+  async function fetchPhotoAsDataUrl(name) {
+    await ensurePhotosFolder();
+    const found = await driveList(
+      "name='" + name + "' and '" + photosFolderId + "' in parents and trashed=false");
+    if (!found.length) return null;
+    const blob = await (await apiFetch('https://www.googleapis.com/drive/v3/files/' + found[0].id + '?alt=media')).blob();
+    const dataUrl = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result); r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+    return { dataUrl: dataUrl, id: found[0].id };
+  }
+
   // Read diagnosis files Claude wrote to Drive and merge unapplied entries into
   // local state via applyKiDiagnosis (app.js). Entry ids are tracked locally so
   // each diagnosis is applied exactly once; duplicate inbox files are harmless.
@@ -394,6 +410,21 @@
       for (const e of doc.entries) {
         if (!e || !e.id || applied[e.id]) continue;
         try { if (applyKiDiagnosis(e)) changed++; } catch (err) { console.warn('KI-Diagnose übersprungen:', e.id, err); }
+        // photo: {file, caption?, cover?} — image Claude uploaded to photos/.
+        if (e.photo && e.photo.file) {
+          const pid = e.plantId || (e.addPlant && (e.addPlant.id || slugify(e.addPlant.name))) || '';
+          try {
+            const got = pid ? await fetchPhotoAsDataUrl(e.photo.file) : null;
+            if (got) {
+              const key = await importKiPhoto(pid, got.dataUrl, e.photo.caption || '', e.photo.cover !== false, e.date);
+              if (key) {
+                photoIndex[key] = { id: got.id, fp: got.dataUrl.length, name: e.photo.file };
+                localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+                changed++;
+              }
+            }
+          } catch (err) { console.warn('KI-Foto übersprungen:', e.id, err); }
+        }
         applied[e.id] = Date.now();
       }
     }
