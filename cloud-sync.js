@@ -1,107 +1,108 @@
 /* ============================================================================
-   Mein Garten – Google Drive Cloud-Sync
+   Mein Garten – Google Drive Cloud-Sync (redirect auth)
    Optional, offline-first. Stores the full backup payload (state + photos)
    as a single JSON file in a visible "Garten-Manager" folder in the user's
-   Google Drive, so the data is reachable from any device and from the PC.
+   Google Drive, reachable from the iPad and the PC.
 
-   Auth: Google Identity Services token flow (no backend, no client secret).
-   Scope: drive.file — the app can only see files it created itself.
-   Sync model: iPad is the source of truth. On change → debounced upload.
-   On startup → pull; adopt the cloud copy if it is newer or this device is
-   empty (e.g. Safari cleared its storage). Single editor → no merge needed.
+   Auth: OAuth 2.0 implicit flow via full-page REDIRECT (no popup, no backend).
+   Popups do not work inside a home-screen–installed iOS PWA, so we bounce the
+   whole page to Google and read the access token back from the URL hash.
+   Requires the app URL to be registered as an Authorised redirect URI on the
+   OAuth client. Scope: drive.file — the app only sees files it created.
+
+   Sync model: this device (iPad) is the source of truth. On change → debounced
+   upload. On startup → only PULL when this device is empty (fresh install or
+   Safari cleared its storage); otherwise PUSH. An emptier copy can never
+   overwrite real data, in either direction.
 
    Depends on app.js globals: state, buildPayload, migrateState,
-   restorePhotos, cleanupV12, save, renderAll, toast, photoCache.
+   restorePhotos, cleanupV12, save, renderAll, toast, photoCache, loadPhotos.
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
+  const REDIRECT_URI = 'https://keywanr.github.io/Garten-Manager/';
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const FOLDER_NAME = 'Garten-Manager';
   const FILE_NAME = 'gartenmanager-data.json';
   const LS_ENABLED = 'gm_cloud_enabled';
   const LS_FOLDER = 'gm_drive_folder_id';
   const LS_FILE = 'gm_drive_file_id';
+  const SS_TOKEN = 'gm_at', SS_TOKEN_EXP = 'gm_at_exp';
+  const SS_STATE = 'gm_oauth_state', SS_RESUME = 'gm_oauth_resume';
   const UPLOAD_DEBOUNCE = 4000;
 
-  let tokenClient = null;
   let accessToken = '';
   let tokenExpiry = 0;
-  let pendingToken = null;          // {resolve,reject} for an in-flight token request
+  let pendingResume = '';           // action to finish after returning from Google
   let folderId = localStorage.getItem(LS_FOLDER) || '';
   let fileId = localStorage.getItem(LS_FILE) || '';
   let uploadTimer = null;
   let initialSyncDone = false;
-  let applyingRemote = false;       // suppress push while adopting a remote copy
+  let applyingRemote = false;
   let statusText = 'Nicht verbunden';
-  let statusKind = 'idle';          // idle | ok | busy | warn | error
+  let statusKind = 'idle';
 
   const enabled = () => localStorage.getItem(LS_ENABLED) === '1';
+  const tokenValid = () => accessToken && Date.now() < tokenExpiry;
 
-  /* ------------------------------------------------------------- GIS load --- */
-  function waitForGis(timeoutMs = 12000) {
-    return new Promise((resolve, reject) => {
-      const t0 = Date.now();
-      (function poll() {
-        if (window.google && google.accounts && google.accounts.oauth2) return resolve();
-        if (Date.now() - t0 > timeoutMs) return reject(new Error('Google-Anmeldedienst nicht geladen'));
-        setTimeout(poll, 150);
-      })();
-    });
-  }
-
-  function ensureTokenClient() {
-    if (tokenClient) return;
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPE,
-      callback: (resp) => {
-        if (resp && resp.access_token) {
-          accessToken = resp.access_token;
-          tokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
-          if (pendingToken) pendingToken.resolve(accessToken);
-        } else if (pendingToken) {
-          pendingToken.reject(new Error(resp && resp.error ? resp.error : 'Kein Zugriffstoken erhalten'));
+  /* ---------------------------------------------------- redirect auth ------- */
+  // On load: capture a token returned in the URL hash, or restore one kept in
+  // sessionStorage from earlier this app session.
+  (function captureAuth() {
+    try {
+      if (location.hash && location.hash.indexOf('access_token=') !== -1) {
+        const h = new URLSearchParams(location.hash.slice(1));
+        const at = h.get('access_token');
+        const returnedState = h.get('state');
+        const savedState = sessionStorage.getItem(SS_STATE);
+        // strip the token from the visible URL immediately
+        history.replaceState(null, '', location.pathname + location.search);
+        if (at && (!savedState || returnedState === savedState)) {
+          accessToken = at;
+          tokenExpiry = Date.now() + (Number(h.get('expires_in') || 3600) - 60) * 1000;
+          sessionStorage.setItem(SS_TOKEN, accessToken);
+          sessionStorage.setItem(SS_TOKEN_EXP, String(tokenExpiry));
+          pendingResume = sessionStorage.getItem(SS_RESUME) || '';
         }
-        pendingToken = null;
-      },
-      error_callback: (err) => {
-        if (pendingToken) pendingToken.reject(new Error(err && err.type ? err.type : 'Anmeldung abgebrochen'));
-        pendingToken = null;
+        sessionStorage.removeItem(SS_STATE);
+        sessionStorage.removeItem(SS_RESUME);
       }
+      if (!accessToken) {
+        const s = sessionStorage.getItem(SS_TOKEN), e = Number(sessionStorage.getItem(SS_TOKEN_EXP) || 0);
+        if (s && Date.now() < e) { accessToken = s; tokenExpiry = e; }
+      }
+    } catch (e) { console.warn('captureAuth', e); }
+  })();
+
+  // Navigate the whole page to Google's sign-in; we return here with a token.
+  function beginRedirect(action) {
+    const st = 'gm_' + Math.random().toString(36).slice(2) + Date.now();
+    sessionStorage.setItem(SS_STATE, st);
+    sessionStorage.setItem(SS_RESUME, action || '');
+    const p = new URLSearchParams({
+      client_id: CLIENT_ID,
+      redirect_uri: REDIRECT_URI,
+      response_type: 'token',
+      scope: SCOPE,
+      include_granted_scopes: 'true',
+      state: st
     });
+    location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + p.toString();
   }
 
-  // interactive=false → silent renewal (only works with a live Google session)
-  function requestToken(interactive) {
-    return new Promise((resolve, reject) => {
-      ensureTokenClient();
-      pendingToken = { resolve, reject };
-      try {
-        tokenClient.requestAccessToken({ prompt: interactive ? 'consent' : '' });
-      } catch (e) {
-        pendingToken = null;
-        reject(e);
-      }
-    });
-  }
-
+  // interactive=true may navigate away (never resolves). false → throw if no token.
   async function getToken(interactive) {
-    if (accessToken && Date.now() < tokenExpiry) return accessToken;
-    await waitForGis();
-    return requestToken(interactive);
+    if (tokenValid()) return accessToken;
+    if (interactive) { beginRedirect('sync'); return new Promise(() => {}); }
+    throw new Error('Keine gültige Anmeldung');
   }
 
   /* ------------------------------------------------------------- Drive API -- */
-  async function apiFetch(url, opts = {}, interactive = false) {
-    const token = await getToken(interactive);
+  async function apiFetch(url, opts = {}) {
+    const token = await getToken(false);
     const headers = Object.assign({}, opts.headers, { Authorization: 'Bearer ' + token });
     let res = await fetch(url, Object.assign({}, opts, { headers }));
-    if (res.status === 401) {                 // token rejected → refresh once
-      accessToken = ''; tokenExpiry = 0;
-      const fresh = await getToken(interactive);
-      headers.Authorization = 'Bearer ' + fresh;
-      res = await fetch(url, Object.assign({}, opts, { headers }));
-    }
+    if (res.status === 401) { accessToken = ''; tokenExpiry = 0; throw new Error('Anmeldung abgelaufen'); }
     if (!res.ok) throw new Error('Drive API ' + res.status + ': ' + (await res.text().catch(() => '')));
     return res;
   }
@@ -111,8 +112,7 @@
       + '?q=' + encodeURIComponent(query)
       + '&fields=' + encodeURIComponent('files(id,name,modifiedTime)')
       + '&spaces=drive&pageSize=10';
-    const res = await apiFetch(url);
-    return (await res.json()).files || [];
+    return (await (await apiFetch(url)).json()).files || [];
   }
 
   async function ensureFolder() {
@@ -132,13 +132,11 @@
     return folderId;
   }
 
-  // Resolve the data file id (may stay '' if it does not exist yet).
   async function ensureFileRef() {
     await ensureFolder();
     if (fileId) {
-      // verify it still exists (not trashed / deleted on the web)
       try { await apiFetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=id,trashed'); return fileId; }
-      catch (e) { fileId = ''; localStorage.removeItem(LS_FILE); }
+      catch (e) { if (String(e.message).indexOf('404') !== -1) { fileId = ''; localStorage.removeItem(LS_FILE); } else throw e; }
     }
     const found = await driveList(
       "name='" + FILE_NAME + "' and '" + folderId + "' in parents and trashed=false");
@@ -173,18 +171,16 @@
   async function downloadRemote() {
     if (!(await ensureFileRef())) return null;
     const res = await apiFetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media');
-    const text = await res.text();
-    try { return JSON.parse(text); } catch (e) { return null; }
+    try { return JSON.parse(await res.text()); } catch (e) { return null; }
   }
 
   /* --------------------------------------------------------- sync actions --- */
   function localIsEmpty() {
     const s = state || {};
-    const noHist = !Array.isArray(s.history) || s.history.length === 0;
-    const noObs = !Array.isArray(s.observations) || s.observations.length === 0;
-    const noProf = !s.profiles || Object.keys(s.profiles).length === 0;
-    const noPhotos = !photoCache || Object.keys(photoCache).length === 0;
-    return noHist && noObs && noProf && noPhotos;
+    return (!Array.isArray(s.history) || s.history.length === 0)
+      && (!Array.isArray(s.observations) || s.observations.length === 0)
+      && (!s.profiles || Object.keys(s.profiles).length === 0)
+      && (!photoCache || Object.keys(photoCache).length === 0);
   }
 
   function remoteHasData(remote) {
@@ -199,7 +195,7 @@
   async function pushLocal() {
     await loadPhotos();
     if (localIsEmpty()) return;                          // never overwrite the cloud with an empty copy
-    const payload = await buildPayload();               // {state, photos, checksum, ...}
+    const payload = await buildPayload();
     await uploadContent(JSON.stringify(payload));
     state.meta.lastCloudPush = Date.now();
     save(false);
@@ -218,18 +214,15 @@
     } finally { applyingRemote = false; }
   }
 
-  // Startup reconciliation. Single-editor model: this device (iPad) is the
-  // source of truth. Only ever PULL when this device has no real data of its
-  // own (fresh install or Safari cleared its storage) — recency alone must
-  // never let an emptier cloud copy overwrite real local data.
+  // Single-editor reconciliation: pull only when this device has no real data.
   async function reconcile() {
-    await loadPhotos();                     // make sure photoCache reflects IndexedDB
+    await loadPhotos();
     const remote = await downloadRemote();
     if (localIsEmpty()) {
       if (remoteHasData(remote)) { await adoptRemote(remote); setStatus('Aus Cloud geladen', 'ok'); }
-      else { setStatus('Verbunden – noch keine Daten', 'ok'); }   // both empty → never push empty
+      else { setStatus('Verbunden – noch keine Daten', 'ok'); }
     } else {
-      await pushLocal();                    // local has data → update the cloud, never pull over it
+      await pushLocal();
       setStatus('Gesichert', 'ok');
     }
     initialSyncDone = true;
@@ -253,72 +246,95 @@
   }
 
   /* ------------------------------------------------------------- controls --- */
-  async function connect() {
-    try {
-      setStatus('Verbinde …', 'busy');
-      await getToken(true);                 // interactive consent
+  function connect() {
+    if (tokenValid()) {                    // already signed in this session
       localStorage.setItem(LS_ENABLED, '1');
-      setStatus('Erste Synchronisierung …', 'busy');
-      await reconcile();
-      toast('Google Drive verbunden');
-    } catch (e) {
-      console.error(e);
-      setStatus('Verbindung fehlgeschlagen', 'error');
-      alert('Die Verbindung zu Google Drive ist fehlgeschlagen:\n' + (e.message || e));
+      setStatus('Synchronisiere …', 'busy');
+      reconcile().then(() => toast('Google Drive verbunden'))
+        .catch(e => { console.error(e); setStatus('Verbindung fehlgeschlagen', 'error'); });
+      return;
     }
+    localStorage.setItem(LS_ENABLED, '1');
+    setStatus('Weiterleitung zu Google …', 'busy');
+    beginRedirect('connect');              // navigates away, returns with a token
   }
 
   function disconnect() {
-    if (accessToken && window.google && google.accounts && google.accounts.oauth2) {
-      try { google.accounts.oauth2.revoke(accessToken, () => {}); } catch (e) {}
+    if (accessToken) {
+      try { fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(accessToken), { method: 'POST', mode: 'no-cors' }); } catch (e) {}
     }
     accessToken = ''; tokenExpiry = 0; initialSyncDone = false;
+    sessionStorage.removeItem(SS_TOKEN); sessionStorage.removeItem(SS_TOKEN_EXP);
     localStorage.removeItem(LS_ENABLED);
     setStatus('Nicht verbunden', 'idle');
     toast('Google Drive getrennt');
   }
 
-  async function syncNow() {
-    if (!enabled()) return connect();
-    try { setStatus('Sichere …', 'busy'); await pushLocal(); setStatus('Gesichert', 'ok'); toast('In Google Drive gesichert'); }
-    catch (e) { console.error(e); setStatus('Sicherung fehlgeschlagen', 'error'); alert('Sicherung fehlgeschlagen:\n' + (e.message || e)); }
+  async function syncNowInternal() {
+    setStatus('Sichere …', 'busy');
+    await pushLocal();
+    setStatus('Gesichert', 'ok');
   }
 
-  async function pullNow() {
+  function syncNow() {
+    if (!enabled()) return connect();
+    if (!tokenValid()) { setStatus('Weiterleitung zu Google …', 'busy'); return beginRedirect('sync'); }
+    syncNowInternal().then(() => toast('In Google Drive gesichert'))
+      .catch(e => { console.error(e); setStatus('Sicherung fehlgeschlagen', 'error'); alert('Sicherung fehlgeschlagen:\n' + (e.message || e)); });
+  }
+
+  function pullNow() {
     if (!enabled()) return;
+    if (!tokenValid()) { setStatus('Weiterleitung zu Google …', 'busy'); return beginRedirect('pull'); }
     if (!confirm('Daten aus Google Drive laden? Die lokalen Daten werden dabei durch die Cloud-Version ersetzt.')) return;
-    try {
-      setStatus('Lade …', 'busy');
-      const remote = await downloadRemote();
-      if (!remote) { setStatus('Keine Cloud-Daten gefunden', 'warn'); return alert('In Google Drive wurde noch keine Sicherung gefunden.'); }
-      await adoptRemote(remote);
-      setStatus('Aus Cloud geladen', 'ok'); toast('Daten aus Google Drive geladen');
-    } catch (e) { console.error(e); setStatus('Laden fehlgeschlagen', 'error'); alert('Laden fehlgeschlagen:\n' + (e.message || e)); }
+    (async () => {
+      try {
+        setStatus('Lade …', 'busy');
+        const remote = await downloadRemote();
+        if (!remote) { setStatus('Keine Cloud-Daten gefunden', 'warn'); return alert('In Google Drive wurde noch keine Sicherung gefunden.'); }
+        await adoptRemote(remote);
+        setStatus('Aus Cloud geladen', 'ok'); toast('Daten aus Google Drive geladen');
+      } catch (e) { console.error(e); setStatus('Laden fehlgeschlagen', 'error'); alert('Laden fehlgeschlagen:\n' + (e.message || e)); }
+    })();
   }
 
   /* ------------------------------------------------- change hook (from save) */
   function onLocalChange() {
     if (!enabled() || !initialSyncDone || applyingRemote) return;
+    if (!tokenValid()) { setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); return; }
     clearTimeout(uploadTimer);
     setStatus('Änderung erkannt …', 'busy');
-    uploadTimer = setTimeout(async () => {
-      try { await pushLocal(); setStatus('Gesichert', 'ok'); }
-      catch (e) { console.error(e); setStatus('Sicherung wartet (offline?)', 'warn'); }
+    uploadTimer = setTimeout(() => {
+      pushLocal().then(() => setStatus('Gesichert', 'ok'))
+        .catch(e => { console.error(e); setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); });
     }, UPLOAD_DEBOUNCE);
   }
 
   /* -------------------------------------------------------------- startup --- */
   async function init() {
     renderStatus();
+    // Finish an action that triggered a redirect to Google.
+    if (pendingResume) {
+      localStorage.setItem(LS_ENABLED, '1');
+      const action = pendingResume; pendingResume = '';
+      try {
+        if (action === 'pull') {
+          const remote = await downloadRemote();
+          if (remote) { await adoptRemote(remote); setStatus('Aus Cloud geladen', 'ok'); toast('Daten aus Google Drive geladen'); }
+          else setStatus('Keine Cloud-Daten gefunden', 'warn');
+        } else {
+          await reconcile();
+          toast(action === 'connect' ? 'Google Drive verbunden' : 'In Google Drive gesichert');
+        }
+      } catch (e) { console.error(e); setStatus('Synchronisierung fehlgeschlagen', 'error'); }
+      return;
+    }
     if (!enabled()) return;
-    try {
-      setStatus('Verbinde …', 'busy');
-      await getToken(false);                // silent renewal
+    if (tokenValid()) {
       setStatus('Synchronisiere …', 'busy');
-      await reconcile();
-    } catch (e) {
-      console.warn('Cloud-Sync: stille Anmeldung nicht möglich', e);
-      setStatus('Zum Fortsetzen erneut verbinden', 'warn');
+      try { await reconcile(); } catch (e) { console.warn(e); setStatus('Zum Fortsetzen „Mit Google Drive verbinden" antippen', 'warn'); }
+    } else {
+      setStatus('Zum Fortsetzen „Mit Google Drive verbinden" antippen', 'warn');
     }
   }
 
