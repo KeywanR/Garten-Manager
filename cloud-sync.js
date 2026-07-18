@@ -26,14 +26,22 @@
    never deleted from Drive, so the folder accumulates the full photo history
    in a form external AI tooling can fetch one image at a time.
 
+   KI diagnosis inbox: Claude writes gartenmanager-ki-diagnose.json into the
+   app folder (via the claude.ai Drive connector); on each reconcile the app
+   merges unapplied entries into local state (applyKiDiagnosis) and the normal
+   push carries them back to Drive. Schema: KI-DIAGNOSE.md in the repo.
+
    Depends on app.js globals: state, buildPayload, buildDossierPayload,
-   gmPhotoFileName, migrateState, restorePhotos, cleanupV12, save, renderAll,
-   toast, photoCache, loadPhotos.
+   gmPhotoFileName, applyKiDiagnosis, migrateState, restorePhotos, cleanupV12,
+   save, renderAll, toast, photoCache, loadPhotos.
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
   const REDIRECT_URI = 'https://keywanr.github.io/Garten-Manager/';
-  const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+  // drive.file: write own files. drive.readonly: additionally READ files created
+  // by others — needed for the KI diagnosis inbox, which Claude's Drive
+  // connector writes (files from other apps are invisible under drive.file).
+  const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
   const FOLDER_NAME = 'Garten-Manager';
   const FILE_NAME = 'gartenmanager-data.json';
   const KI_FILE_NAME = 'gartenmanager-ki-akte.json';
@@ -44,6 +52,8 @@
   const LS_KI_FILE = 'gm_drive_ki_file_id';
   const LS_PHOTOS_FOLDER = 'gm_drive_photos_folder_id';
   const LS_PHOTO_INDEX = 'gm_drive_photo_index';
+  const DIAG_FILE_NAME = 'gartenmanager-ki-diagnose.json';
+  const LS_DIAG_APPLIED = 'gm_ki_diag_applied';
   const SS_TOKEN = 'gm_at', SS_TOKEN_EXP = 'gm_at_exp';
   const SS_STATE = 'gm_oauth_state', SS_RESUME = 'gm_oauth_resume';
   const UPLOAD_DEBOUNCE = 4000;
@@ -357,6 +367,38 @@
       setStatus('Gesichert', 'ok');
     }
     initialSyncDone = true;
+    // After the data sync: pick up any AI diagnoses waiting in the inbox.
+    // Changes trigger the normal debounced push, so they reach Drive too.
+    try { await applyDiagnoses(); } catch (e) { console.warn('KI-Diagnose-Import übersprungen:', e); }
+  }
+
+  /* ------------------------------------------------ KI diagnosis inbox ------ */
+  // Read diagnosis files Claude wrote to Drive and merge unapplied entries into
+  // local state via applyKiDiagnosis (app.js). Entry ids are tracked locally so
+  // each diagnosis is applied exactly once; duplicate inbox files are harmless.
+  async function applyDiagnoses() {
+    if (!enabled()) return;
+    await ensureFolder();
+    const found = await driveList(
+      "name='" + DIAG_FILE_NAME + "' and '" + folderId + "' in parents and trashed=false");
+    if (!found.length) return;
+    let applied = {};
+    try { applied = JSON.parse(localStorage.getItem(LS_DIAG_APPLIED) || '{}') || {}; } catch (e) { applied = {}; }
+    let changed = 0;
+    found.sort((a, b) => (b.modifiedTime || '').localeCompare(a.modifiedTime || ''));
+    for (const f of found) {
+      let doc = null;
+      try { doc = JSON.parse(await (await apiFetch('https://www.googleapis.com/drive/v3/files/' + f.id + '?alt=media')).text()); }
+      catch (e) { console.warn('KI-Diagnose-Datei unlesbar:', e); continue; }
+      if (!doc || !Array.isArray(doc.entries)) continue;
+      for (const e of doc.entries) {
+        if (!e || !e.id || applied[e.id]) continue;
+        try { if (applyKiDiagnosis(e)) changed++; } catch (err) { console.warn('KI-Diagnose übersprungen:', e.id, err); }
+        applied[e.id] = Date.now();
+      }
+    }
+    localStorage.setItem(LS_DIAG_APPLIED, JSON.stringify(applied));
+    if (changed) { save(false); renderAll(); toast('KI-Diagnose übernommen (' + changed + ')'); }
   }
 
   /* ------------------------------------------------------------- status UI -- */
