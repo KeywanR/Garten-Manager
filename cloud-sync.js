@@ -21,9 +21,14 @@
    export. When the app goes to background, a pending debounced upload is
    flushed immediately — the closest iOS lets a PWA get to "save on exit".
 
+   Photo history: every push also uploads new/changed photos as individual
+   image files into a "photos" subfolder (name via gmPhotoFileName). Files are
+   never deleted from Drive, so the folder accumulates the full photo history
+   in a form external AI tooling can fetch one image at a time.
+
    Depends on app.js globals: state, buildPayload, buildDossierPayload,
-   migrateState, restorePhotos, cleanupV12, save, renderAll, toast,
-   photoCache, loadPhotos.
+   gmPhotoFileName, migrateState, restorePhotos, cleanupV12, save, renderAll,
+   toast, photoCache, loadPhotos.
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
@@ -32,10 +37,13 @@
   const FOLDER_NAME = 'Garten-Manager';
   const FILE_NAME = 'gartenmanager-data.json';
   const KI_FILE_NAME = 'gartenmanager-ki-akte.json';
+  const PHOTOS_FOLDER_NAME = 'photos';
   const LS_ENABLED = 'gm_cloud_enabled';
   const LS_FOLDER = 'gm_drive_folder_id';
   const LS_FILE = 'gm_drive_file_id';
   const LS_KI_FILE = 'gm_drive_ki_file_id';
+  const LS_PHOTOS_FOLDER = 'gm_drive_photos_folder_id';
+  const LS_PHOTO_INDEX = 'gm_drive_photo_index';
   const SS_TOKEN = 'gm_at', SS_TOKEN_EXP = 'gm_at_exp';
   const SS_STATE = 'gm_oauth_state', SS_RESUME = 'gm_oauth_resume';
   const UPLOAD_DEBOUNCE = 4000;
@@ -46,6 +54,9 @@
   let folderId = localStorage.getItem(LS_FOLDER) || '';
   let fileId = localStorage.getItem(LS_FILE) || '';
   let kiFileId = localStorage.getItem(LS_KI_FILE) || '';
+  let photosFolderId = localStorage.getItem(LS_PHOTOS_FOLDER) || '';
+  let photoIndex = {};   // key -> {id, fp}: Drive file id + fingerprint of last upload
+  try { photoIndex = JSON.parse(localStorage.getItem(LS_PHOTO_INDEX) || '{}') || {}; } catch (e) { photoIndex = {}; }
   let uploadTimer = null;
   let initialSyncDone = false;
   let applyingRemote = false;
@@ -202,6 +213,83 @@
     if (kiFileId) localStorage.setItem(LS_KI_FILE, kiFileId);
   }
 
+  /* ------------------------------------------------- photo history upload --- */
+  async function ensurePhotosFolder() {
+    if (photosFolderId) return photosFolderId;
+    await ensureFolder();
+    const found = await driveList(
+      "name='" + PHOTOS_FOLDER_NAME + "' and mimeType='application/vnd.google-apps.folder' and '"
+      + folderId + "' in parents and trashed=false");
+    if (found.length) { photosFolderId = found[0].id; }
+    else {
+      const res = await apiFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: PHOTOS_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder', parents: [folderId] })
+      });
+      photosFolderId = (await res.json()).id;
+    }
+    localStorage.setItem(LS_PHOTOS_FOLDER, photosFolderId);
+    return photosFolderId;
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const i = dataUrl.indexOf(','), mime = (dataUrl.slice(5, i).split(';')[0]) || 'image/jpeg';
+    const bin = atob(dataUrl.slice(i + 1)), arr = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
+    return new Blob([arr], { type: mime });
+  }
+
+  async function createPhotoFile(name) {
+    const res = await apiFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, parents: [photosFolderId] })
+    });
+    return (await res.json()).id;
+  }
+
+  async function uploadPhotoFile(key, dataUrl) {
+    await ensurePhotosFolder();
+    const name = gmPhotoFileName(key, dataUrl);
+    const blob = dataUrlToBlob(dataUrl);
+    let id = (photoIndex[key] && photoIndex[key].id) || '';
+    if (!id) {   // adopt an existing Drive file of the same name before creating one
+      const found = await driveList(
+        "name='" + name + "' and '" + photosFolderId + "' in parents and trashed=false");
+      if (found.length) id = found[0].id;
+    }
+    if (!id) id = await createPhotoFile(name);
+    const mediaUrl = function (fid) {
+      return 'https://www.googleapis.com/upload/drive/v3/files/' + fid + '?uploadType=media&fields=id';
+    };
+    try {
+      await apiFetch(mediaUrl(id), { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
+    } catch (e) {
+      if (String(e.message).indexOf('404') !== -1) {   // stale id: file was deleted in Drive
+        id = await createPhotoFile(name);
+        await apiFetch(mediaUrl(id), { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
+      } else throw e;
+    }
+    photoIndex[key] = { id: id, fp: dataUrl.length };
+    localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+  }
+
+  // Upload photos that are new or changed since the last sync. Photos deleted
+  // in the app are deliberately left in Drive — they are the history.
+  async function syncPhotos() {
+    await loadPhotos();
+    const keys = Object.keys(photoCache || {});
+    for (const k of keys) {
+      const du = photoCache[k];
+      if (typeof du !== 'string' || !du.startsWith('data:image/')) continue;
+      const rec = photoIndex[k];
+      if (rec && rec.fp === du.length) continue;         // unchanged since last upload
+      try { await uploadPhotoFile(k, du); }
+      catch (e) { console.warn('Foto-Upload übersprungen:', k, e); break; }   // token/network: retry next sync
+    }
+  }
+
   async function downloadRemote() {
     if (!(await ensureFileRef())) return null;
     const res = await apiFetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media');
@@ -240,6 +328,8 @@
       state.meta.lastDossierAt = ki.generated;
       save(false);
     } catch (e) { console.warn('KI-Akte-Upload übersprungen:', e); }
+    // Photo history: individually reachable image files in photos/.
+    try { await syncPhotos(); } catch (e) { console.warn('Foto-Sync übersprungen:', e); }
   }
 
   async function adoptRemote(remote) {
