@@ -427,6 +427,40 @@ function plantTimeline(id){
   return [...obs,...hist].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
 }
 
+/* ------------------------------------------------- KI diagnosis import ------ */
+/* Merge one diagnosis entry from the Drive inbox (gartenmanager-ki-diagnose.json)
+   into local state. Called by cloud-sync during reconcile — the iPad remains the
+   single writer of the data file; the AI only files suggestions through this
+   inbox. Profile texts are appended with a dated [KI …] tag, never overwritten.
+   Returns true if anything changed. */
+function applyKiDiagnosis(e){
+  if(!e||!plant(e.plantId))return false;
+  const d=isDateString(e.date)?e.date:today();
+  let changed=false;
+  if(e.status||e.reason){
+    const cur=healthFor(e.plantId);
+    state.health[e.plantId]={status:e.status||cur.status,reason:e.reason!==undefined?e.reason:cur.reason,updated:d};
+    changed=true;
+  }
+  if(e.observation){
+    state.observations.unshift({id:`obs-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,plantId:e.plantId,date:d,type:'KI-Diagnose',text:e.observation});
+    changed=true;
+  }
+  if(e.profile&&typeof e.profile==='object'){
+    const prof={...profileFor(e.plantId)};
+    for(const f of PROFILE_FIELDS){
+      const txt=e.profile[f];
+      if(!txt||typeof txt!=='string')continue;
+      const tag=`[KI ${d}] ${txt}`;
+      if(prof[f]&&prof[f].indexOf(tag)!==-1)continue;   // already applied
+      prof[f]=prof[f]?`${prof[f]}\n${tag}`:tag;
+      changed=true;
+    }
+    state.profiles[e.plantId]=prof;
+  }
+  return changed;
+}
+
 /* -------------------------------------------------------------- photos ------ */
 function photoDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);
   r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('photos'))db.createObjectStore('photos');
