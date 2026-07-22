@@ -343,7 +343,9 @@ function setTaskDate(id,date){if(!date)return;const d=defs.find(x=>x.id===id);
   state.tasks[id]={last:date,next:add(date,d.interval)};save();renderAll();toast('Termin aktualisiert')}
 function clearTask(id){delete state.tasks[id];save();renderAll()}
 function startTask(id){const d=defs.find(x=>x.id===id);if(!d)return;
-  state.tasks[id]={last:'',next:initialDueFor(d),autoStarted:false};save();renderAll();toast('Aufgabe gestartet')}
+  const next=initialDueFor(d);
+  state.tasks[id]={last:'',next,autoStarted:false};save();renderAll();
+  toast(`Eingeplant – fällig ${diff(next)===0?'heute':fmt(next)}`)}
 
 function migrateLegacy(force=false){
   let old={};try{old=JSON.parse(localStorage.getItem(LEGACY_KEY)||'{}')}catch(e){}
@@ -384,18 +386,23 @@ function taskHTML(d){
   const cls=started?classify(d):'new';
   const fert=fertilizerInfo(d,nextFor(d)||today());
   const fertHTML=fert?`<div class="fert"><b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}</div>`:'';
+  const due=started?'':initialDueFor(d);
+  const dueTxt=started?'':(diff(due)===0?'heute':fmt(due));
+  const cycleTxt=d.interval>=365?'in einem Jahr':`in ${d.interval} Tagen`;
   const meta=started
     ? `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${statusText(d)}${nextFor(d)?` · fällig ${fmt(nextFor(d))}`:''}${s.last?` · zuletzt ${fmt(s.last)}`:''}`
-    : `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${d.optional?'optional':'noch nicht gestartet'}`;
+    : `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${d.optional?'optional · ':''}noch nicht aktiv`;
+  const startHint=started?'':`<div class="hint">„✓ Gerade gemacht“: du hast das eben erledigt – nächster Termin ${cycleTxt}.<br>„Einplanen“: nur auf die Aufgabenliste setzen – fällig ${dueTxt}.</div>`;
   const actions=started
-    ? `<input aria-label="Datum" type="date" value="${s.last||''}" onchange="setTaskDate('${d.id}',this.value)">
+    ? `<input aria-label="Erledigt am" title="Datum der letzten Erledigung setzen" type="date" value="${s.last||''}" onchange="setTaskDate('${d.id}',this.value)">
        <button class="btn primary" onclick="complete('${d.id}')">✓ Erledigt</button>
        ${s.last?`<button class="btn" onclick="clearTask('${d.id}')">Zurücksetzen</button>`:''}`
-    : `<button class="btn soft" onclick="startTask('${d.id}')">Aufgabe starten</button>`;
+    : `<button class="btn primary" onclick="complete('${d.id}')">✓ Gerade gemacht</button>
+       <button class="btn soft" onclick="startTask('${d.id}')">Einplanen (fällig ${dueTxt})</button>`;
   return `<article class="task ${cls}"><div>
     <h3>${esc(d.title)}</h3>
     <div class="meta">${meta}</div>
-    ${d.note?`<div class="note">${esc(d.note)}</div>`:''}${fertHTML}
+    ${d.note?`<div class="note">${esc(d.note)}</div>`:''}${fertHTML}${startHint}
    </div><div class="actions">${actions}</div></article>`;
 }
 
