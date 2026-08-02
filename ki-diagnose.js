@@ -71,16 +71,33 @@
   /* ---------------------------------------------------------- render ------- */
   function render() {
     const un = unassigned(), fs = findings().slice(0, 80), nUnread = unread().length;
+    const props = (state.kiProposals || []).filter(p => p.status === 'pending');
 
     const badge = document.getElementById('kiBadge');
     if (badge) {
-      const n = nUnread + un.length;
+      const n = nUnread + un.length + props.length;
       badge.textContent = n ? String(n) : '';
       badge.style.display = n ? '' : 'none';
     }
 
     const box = document.getElementById('kiContent');
     if (!box) return;
+
+    // Nothing here has changed the garden yet — the care plan only moves once
+    // you confirm. Rejecting is recorded too, so it is not proposed again.
+    const propHTML = props.length ? `<div class="section-title"><h2>Zur Bestätigung</h2><small>${props.length}</small></div>
+      <div class="task-list">${props.map(p => {
+        const pl = plant(p.plantId);
+        return `<article class="task late"><div>
+          <h3>${esc(p.title)}</h3>
+          <div class="meta">${fmt(p.date)}${pl ? ` · ${esc(pl.name)}` : ''} · ${p.type === 'newPlant' ? 'neue Pflanze' : 'Pflegeplan'}</div>
+          ${p.detail ? `<div class="note" style="white-space:pre-line">${esc(p.detail)}</div>` : ''}
+        </div><div class="actions">
+          <button class="btn primary" onclick="confirmProposal('${p.id}')">Bestätigen</button>
+          ${p.type === 'newPlant' && pl ? `<button class="btn soft" onclick="openPlantFile('${p.plantId}')">Bearbeiten</button>` : ''}
+          <button class="btn" onclick="rejectProposal('${p.id}')">Ablehnen</button>
+        </div></article>`;
+      }).join('')}</div>` : '';
 
     const unHTML = un.length ? `<div class="section-title"><h2>Fotos ohne Pflanze</h2><small>${un.length}</small></div>
       <div class="task-list">${un.map(([k, m]) => `<article class="task due"><div>
@@ -107,7 +124,7 @@
       : `<div class="empty">Noch keine Diagnosen. Fotografiere Pflanzen in der App – beim nächsten
          Sync landen sie in Google Drive, und Claude trägt die Auswertung hier ein.</div>`;
 
-    box.innerHTML = unHTML +
+    box.innerHTML = propHTML + unHTML +
       `<div class="section-title"><h2>Diagnosen</h2><small>${nUnread} ungelesen</small></div>` + fHTML;
   }
 

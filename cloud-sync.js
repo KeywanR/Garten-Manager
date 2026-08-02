@@ -379,6 +379,22 @@
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     out.customPlants = mergeById(out.customPlants, remote.customPlants, 'id');
     out.customTasks = mergeById(out.customTasks, remote.customTasks, 'id');
+    // Plants: union by id, but an edited plant beats an unreviewed one — if
+    // either device has confirmed/corrected it, the "from KI" flag is gone.
+    out.customPlants = mergeById(out.customPlants, remote.customPlants, 'id').map(p => {
+      const r = (remote.customPlants || []).find(x => x.id === p.id);
+      if (r && p.fromKi && !r.fromKi) return r;
+      return p;
+    });
+    // Proposals: union by id, but a decision always beats "pending". Confirming
+    // on the iPad must not revert because the phone still shows it as open.
+    const byId = new Map((out.kiProposals || []).map(p => [p.id, p]));
+    for (const rp of remote.kiProposals || []) {
+      const lp = byId.get(rp.id);
+      if (!lp) { byId.set(rp.id, rp); continue; }
+      if (lp.status === 'pending' && rp.status !== 'pending') byId.set(rp.id, rp);
+    }
+    out.kiProposals = [...byId.values()];
     // History has no ids — key on the fields that identify one logged action.
     out.history = mergeById(out.history, remote.history,
       h => `${h.date}|${h.taskId}|${h.plantId}|${h.title}`)
