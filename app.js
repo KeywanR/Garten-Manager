@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v33';
+const APP_BUILD='v34';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -1100,11 +1100,25 @@ async function renderBuildInfo(){
 function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings();
   if(window.KiDiagnose)KiDiagnose.render()}
 
+/* Remember which tab is open. Signing in to Google is a full-page redirect, so
+   the app reloads on return and would otherwise always come back on "Heute" —
+   which is jarring when you were three taps deep in Daten & KI, and made the
+   sign-in feel like it had failed. Kept in sessionStorage, so it restores across
+   the redirect and an ordinary reload, but a genuinely fresh start still opens
+   on the home view. */
+const LS_VIEW='gm_view';
 function switchView(v){
+  const sec=document.getElementById('view-'+v);
+  if(!sec)return;
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
-  document.getElementById('view-'+v).classList.remove('hidden');
+  sec.classList.remove('hidden');
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
+  try{sessionStorage.setItem(LS_VIEW,v)}catch(e){}
   if(v==='plants')renderPlants();
+}
+function restoreView(){
+  let v='';try{v=sessionStorage.getItem(LS_VIEW)||''}catch(e){}
+  if(v&&v!=='today'&&document.getElementById('view-'+v))switchView(v);
 }
 
 /* -------------------------------------------------- backup / integrity ------ */
@@ -1355,6 +1369,7 @@ async function startApp(){
   initializeCareTasks();
   if(!state.migrated)migrateLegacy();
   renderAll();
+  restoreView();
   await runIntegrityCheck(false);
   await createLocalSnapshot('automatisch',false);
   if(window.CloudSync)CloudSync.init();
