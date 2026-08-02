@@ -276,6 +276,11 @@ a{color:var(--leaf)}
           <button class="btn" onclick="toggleSeasons()" id="seasonToggle"></button>
         </div>
         <div class="panel">
+          <h3>🔎 Version dieses Geräts</h3>
+          <p>Zum Vergleichen zwischen iPad und Handy. „Datenformat" ändert sich fast nie und sagt nichts darüber aus, welcher Code läuft.</p>
+          <div class="meta" id="buildInfo"></div>
+        </div>
+        <div class="panel">
           <h3>Zurücksetzen</h3>
           <p>Vorher wird automatisch ein Schnappschuss angelegt.</p>
           <button class="btn danger" onclick="resetApp()">Gartenmanager zurücksetzen</button>
@@ -284,7 +289,7 @@ a{color:var(--leaf)}
     </section>
   </main>
 
-  <div class="footer">Daten bleiben lokal auf diesem Gerät. Version 12 · installierbar als App.</div>
+  <div class="footer" id="footerInfo">Daten bleiben lokal auf diesem Gerät.</div>
 </div>
 <div class="toast" id="toast"></div>
 <div id="plantFile" class="pf hidden" role="dialog" aria-modal="true"></div>
