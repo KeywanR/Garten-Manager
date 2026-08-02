@@ -83,12 +83,35 @@ schlechter als beim letzten Mal".
   Bestätigung vor; Name, Kategorie und Notiz kann der Nutzer korrigieren.
 - Unsicher → nichts schreiben, im Bericht erwähnen.
 
-## 6. Behandlungsänderungen nur vorschlagen
+## 6. Pflegeplan als Ganzes vorschlagen
 
-Neue wiederkehrende Pflegemaßnahmen immer über `proposeTasks`, **nie** über
-`addTasks`. Vorschläge ändern den Pflegeplan nicht — der Nutzer bestätigt sie in
-der App. Nichts vorschlagen, was in `kiProposals` schon `rejected` ist oder
-bereits in `careSchedule` steht.
+Ändert sich der Zustand einer Pflanze, ändert sich meist nicht nur *was
+dazukommt*, sondern auch *was so nicht mehr stimmt*. Deshalb immer den
+**gesamten** Plan vorschlagen — über `proposePlan`, nie über `addTasks`:
+
+```json
+"proposePlan": {
+  "reason": "<warum sich der Plan ändert, ein bis zwei Sätze>",
+  "addTasks":    [{"type":"…","title":"…","interval":7,"months":[7,8],"note":"…","reason":"…"}],
+  "changeTasks": [{"id":"tomaten:krankheit","interval":3,"reason":"engmaschiger kontrollieren"}],
+  "removeTasks": [{"id":"tomaten:duengen","reason":"ab August keine N-Düngung"}]
+}
+```
+
+Prüfe bei jedem Vorschlag ausdrücklich den Bestand in `careSchedule`:
+
+- **Widerspricht** eine bestehende Aufgabe der neuen Einschätzung, gehört sie in
+  `removeTasks` — nicht stehen lassen. Beispiel: die Diagnose sagt „ab jetzt
+  kein Stickstoff mehr", während alle 10 Tage weiter gedüngt wird. Beides
+  parallel ist nicht bloß unordentlich, es schadet der Pflanze.
+- **Passt** eine bestehende Aufgabe grundsätzlich, braucht aber einen anderen
+  Rhythmus, gehört sie in `changeTasks` — kein zweiter, ähnlicher Eintrag
+  daneben.
+- Nur was wirklich fehlt, kommt in `addTasks`.
+
+Der Nutzer bestätigt den Plan in der App als **eine** Entscheidung; erst dann
+greift er. Bereits `rejected`-Vorschläge aus `kiProposals` nicht wiederholen,
+und nichts vorschlagen, was in `suppressedTasks` bewusst ausgesetzt wurde.
 
 ## Stopp-Signale
 
@@ -97,8 +120,11 @@ trotzdem falsch:
 
 - Du willst im `photos`-Ordner aufräumen, umbenennen oder löschen — **stopp**.
   Das Archiv ist die Fotohistorie; gelöscht wird dort nie etwas.
-- Du willst `addTasks` statt `proposeTasks` schreiben, weil die Maßnahme
+- Du willst `addTasks` statt `proposePlan` schreiben, weil die Maßnahme
   offensichtlich richtig ist — **stopp**. Der Pflegeplan gehört dem Nutzer.
+- Du schlägst etwas Neues vor, ohne geprüft zu haben, ob eine bestehende
+  Aufgabe dem widerspricht — **stopp**. Alt und neu nebeneinander ist der
+  gefährlichste Zustand.
 - Du bist dir bei der Zuordnung nicht sicher, willst aber trotzdem
   `assignPhoto` setzen — **stopp**. Lieber im Bericht erwähnen.
 - Du willst `needsReview` weglassen, weil die Bestimmung sicher wirkt —
@@ -131,7 +157,12 @@ Eintrag:
   "profile": {"<location|planted|watering|fertilizing|diseases|treatments|harvest|notes>": "<nur wenn nötig>"},
   "assignPhoto": {"file": "<dateiname>", "caption": "<kurz>"},
   "addPlant": {"name": "<name>", "cat": "<kategorie>", "note": "<kurz>", "needsReview": true},
-  "proposeTasks": [{"type":"<kurz>","title":"<titel>","interval":14,"months":[5,6,7],"note":"<hinweis>","reason":"<warum>"}]
+  "proposePlan": {
+    "reason": "<warum sich der Plan ändert>",
+    "addTasks":    [{"type":"<kurz>","title":"<titel>","interval":14,"months":[5,6,7],"note":"<hinweis>","reason":"<warum>"}],
+    "changeTasks": [{"id":"<pflanzenid>:<typ>","interval":7,"reason":"<warum>"}],
+    "removeTasks": [{"id":"<pflanzenid>:<typ>","reason":"<warum>"}]
+  }
 }
 ```
 

@@ -141,11 +141,23 @@ function slugify(s){return String(s).toLowerCase()
 function rebuildCatalog(){
   const cp=(state.customPlants||[]).filter(p=>p&&p.id&&p.name&&!basePlants.some(b=>b.id===p.id));
   plants=[...basePlants,...cp.map(p=>({id:p.id,name:p.name,cat:p.cat||'Zimmerpflanzen',note:p.note||''}))];
-  const ct=(state.customTasks||[]).filter(t=>t&&t.id&&t.plantId&&!baseDefs.some(b=>b.id===t.id));
-  defs=[...baseDefs,...ct.map(t=>({id:t.id,plantId:t.plantId,title:t.title||'Pflege',
-    interval:Number(t.interval)||14,
-    months:Array.isArray(t.months)&&t.months.length?t.months.filter(m=>m>=1&&m<=12):ALL_MONTHS,
-    note:t.note||'',optional:!!t.optional}))];
+  // Custom tasks may now OVERRIDE a built-in task of the same id, not just add
+  // new ones. A care plan that changes with the plant's condition has to be able
+  // to alter an existing rhythm — otherwise the old and new regimes run in
+  // parallel, which for things like "stop feeding from August" is actively
+  // harmful rather than merely untidy.
+  const byId=new Map(baseDefs.map(d=>[d.id,d]));
+  (state.customTasks||[]).filter(t=>t&&t.id&&t.plantId).forEach(t=>{
+    const base=byId.get(t.id);
+    byId.set(t.id,{id:t.id,plantId:t.plantId,title:t.title||(base&&base.title)||'Pflege',
+      interval:Number(t.interval)||(base&&base.interval)||14,
+      months:Array.isArray(t.months)&&t.months.length?t.months.filter(m=>m>=1&&m<=12):((base&&base.months)||ALL_MONTHS),
+      note:t.note!==undefined?t.note:((base&&base.note)||''),optional:!!t.optional});
+  });
+  // Retired tasks disappear from the plan entirely, so initializeCareTasks
+  // cannot quietly restart them on the next app open.
+  const sup=state.suppressedTasks||{};
+  defs=[...byId.values()].filter(d=>!(sup[d.id]&&sup[d.id].active));
   refreshCatFilter();
 }
 
@@ -236,7 +248,7 @@ const diff=s=>Math.round((parse(s)-parse(today()))/86400000);
 const fmt=s=>s?new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}).format(parse(s)):'—';
 const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(parse(v).getTime());
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],suppressedTasks:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -251,6 +263,7 @@ function normalizeState(raw){
   out.customTasks=Array.isArray(x.customTasks)?x.customTasks:[];
   out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
   out.kiProposals=Array.isArray(x.kiProposals)?x.kiProposals:[];
+  out.suppressedTasks=(x.suppressedTasks&&typeof x.suppressedTasks==='object'&&!Array.isArray(x.suppressedTasks))?x.suppressedTasks:{};
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
   out.dataVersion=DATA_VERSION;
@@ -550,16 +563,29 @@ function applyKiDiagnosis(e){
       changed=true;
     }
   }
-  // proposeTasks: like addTasks, but nothing reaches the care schedule until the
-  // user confirms it in the KI view. Treatment changes never apply silently.
-  if(Array.isArray(e.proposeTasks)&&e.proposeTasks.length&&e.plantId){
-    const tasks=e.proposeTasks.filter(t=>t&&t.type)
-      .filter(t=>{const tid=`${e.plantId}:${t.type}`;
-        return !state.customTasks.some(x=>x.id===tid)&&!baseDefs.some(b=>b.id===tid)});
-    if(tasks.length&&addProposal({id:`${e.id||'ki'}-tasks`,plantId:e.plantId,type:'tasks',
-      title:tasks.length===1?tasks[0].title||'Neue Pflegeaufgabe':`${tasks.length} neue Pflegeaufgaben`,
-      detail:tasks.map(t=>`${t.title||t.type}${t.reason?` – ${t.reason}`:''}`).join('\n'),
-      payload:{addTasks:tasks},date:d}))changed=true;
+  // A care-plan change is proposed as ONE unit — additions, altered rhythms and
+  // retirements together — so the user confirms a coherent regime rather than
+  // bolting a new task onto an old one that contradicts it. Nothing reaches the
+  // schedule until confirmed. `proposeTasks` is the additions-only shorthand.
+  const plan=e.proposePlan||(Array.isArray(e.proposeTasks)&&e.proposeTasks.length?{addTasks:e.proposeTasks}:null);
+  if(plan&&e.plantId){
+    const adds=(plan.addTasks||[]).filter(t=>t&&t.type)
+      .filter(t=>!defs.some(x=>x.id===`${e.plantId}:${t.type}`));
+    const changes=(plan.changeTasks||[]).filter(t=>t&&t.id&&defs.some(x=>x.id===t.id));
+    const removes=(plan.removeTasks||[]).filter(t=>t&&t.id&&defs.some(x=>x.id===t.id));
+    if(adds.length||changes.length||removes.length){
+      const lines=[];
+      if(plan.reason)lines.push(plan.reason,'');
+      adds.forEach(t=>lines.push(`+ NEU: ${t.title||t.type}${t.interval?` (alle ${t.interval} Tage)`:''}${t.reason?` – ${t.reason}`:''}`));
+      changes.forEach(t=>{const cur=defs.find(x=>x.id===t.id);
+        lines.push(`~ GEÄNDERT: ${(cur&&cur.title)||t.id}${t.interval?` – jetzt alle ${t.interval} Tage`:''}${t.reason?` – ${t.reason}`:''}`)});
+      removes.forEach(t=>{const cur=defs.find(x=>x.id===t.id);
+        lines.push(`− ENTFÄLLT: ${(cur&&cur.title)||t.id}${t.reason?` – ${t.reason}`:''}`)});
+      if(addProposal({id:`${e.id||'ki'}-plan`,plantId:e.plantId,type:'plan',
+        title:removes.length||changes.length?'Pflegeplan anpassen':(adds.length===1?adds[0].title||'Neue Pflegeaufgabe':`${adds.length} neue Pflegeaufgaben`),
+        detail:lines.join('\n'),
+        payload:{addTasks:adds,changeTasks:changes,removeTasks:removes},date:d}))changed=true;
+    }
   }
   // assignPhoto: adopt a photo the app already holds but has not filed under any
   // plant (imported via "Fotos importieren"). The inbox could previously only
@@ -621,9 +647,25 @@ const pendingProposals=()=>(state.kiProposals||[]).filter(p=>p.status==='pending
 function confirmProposal(id){
   const p=(state.kiProposals||[]).find(x=>x.id===id);
   if(!p||p.status!=='pending')return;
-  if(p.type==='tasks'&&p.payload&&Array.isArray(p.payload.addTasks)){
-    // Reuse the proven merge path rather than a second task-writing code path.
-    applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:p.payload.addTasks});
+  if((p.type==='plan'||p.type==='tasks')&&p.payload){
+    const pl=p.payload;
+    // Order matters: retire and re-tune the existing regime first, then add, so
+    // the plan is never briefly inconsistent with itself.
+    (pl.removeTasks||[]).forEach(t=>suppressTask(t.id,t.reason||p.title));
+    (pl.changeTasks||[]).forEach(t=>{
+      const cur=defs.find(x=>x.id===t.id);if(!cur)return;
+      state.customTasks=(state.customTasks||[]).filter(x=>x.id!==t.id);
+      state.customTasks.push({id:t.id,plantId:cur.plantId,
+        title:t.title||cur.title,interval:Number(t.interval)||cur.interval,
+        months:Array.isArray(t.months)&&t.months.length?t.months:cur.months,
+        note:t.note!==undefined?t.note:cur.note,optional:!!cur.optional});
+      // A changed rhythm re-bases from today rather than keeping a due date
+      // computed under the old interval.
+      if(state.tasks[t.id]){const last=state.tasks[t.id].last||'';
+        state.tasks[t.id]={last,next:add(last||today(),Number(t.interval)||cur.interval)}}
+    });
+    if(Array.isArray(pl.addTasks)&&pl.addTasks.length)
+      applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:pl.addTasks});
   }
   if(p.type==='newPlant'){
     const cp=(state.customPlants||[]).find(x=>x.id===p.plantId);
@@ -640,6 +682,27 @@ function rejectProposal(id){
   state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Abgelehnt: ${p.title}`});
   save();renderAll();toast('Vorschlag abgelehnt');
 }
+
+/* Retire a care task. The definition itself is never deleted — built-in tasks
+   live in code and a deleted state.tasks entry would simply be re-created by
+   initializeCareTasks on the next app open. Instead the id is recorded as
+   suppressed, rebuildCatalog filters it out of the plan, and it can be brought
+   back later. Nothing is lost, and the old rhythm genuinely stops. */
+function suppressTask(id,reason){
+  if(!id)return false;
+  state.suppressedTasks=state.suppressedTasks||{};
+  state.suppressedTasks[id]={since:today(),reason:reason||'',active:true};
+  delete state.tasks[id];
+  return true;
+}
+function restoreTask(id){
+  const s=(state.suppressedTasks||{})[id];if(!s)return;
+  state.suppressedTasks[id]={since:today(),reason:s.reason||'',active:false};
+  rebuildCatalog();initializeCareTasks();save();renderAll();
+  toast('Aufgabe wieder aufgenommen');
+}
+const suppressedFor=pid=>Object.entries(state.suppressedTasks||{})
+  .filter(([id,s])=>s&&s.active&&id.split(':')[0]===pid);
 
 /* Map a Drive photo filename back to the local photo key. cloud-sync records
    the uploaded name per key in gm_drive_photo_index; if that is missing (older
@@ -860,6 +923,13 @@ function openPlantFile(id){
 
       <section class="fp full"><h3>📅 Pflegeplan</h3>
         <div class="task-list">${ts.length?ts.map(taskHTML).join(''):'<div class="empty">Keine Aufgaben hinterlegt.</div>'}</div>
+        ${suppressedFor(id).length?`<h3 style="margin-top:16px;font-size:.95rem">Ausgesetzte Aufgaben</h3>
+          <div class="journal">${suppressedFor(id).map(([tid,s])=>`<div class="j-row">
+            <div class="date">seit ${fmt(s.since)}</div>
+            <div><strong>${esc(tid.split(':')[1]||tid)}</strong>
+            ${s.reason?`<div class="meta">${esc(s.reason)}</div>`:''}
+            <button class="btn" onclick="restoreTask('${tid}')">Wieder aufnehmen</button></div>
+          </div>`).join('')}</div>`:''}
       </section>
 
       <section class="fp full"><h3>📷 Fotoverlauf</h3>
@@ -1088,6 +1158,9 @@ function buildPlantDossier(id){
     currentHealth:healthFor(id),
     profile:profileFor(id),
     careSchedule:care,
+    // Deliberately retired tasks — so a later run understands the plan already
+    // changed and does not propose reinstating what was just stopped.
+    suppressedTasks:suppressedFor(id).map(([tid,s])=>({id:tid,since:s.since,reason:s.reason||''})),
     timeline:history,
     photos
   };

@@ -395,6 +395,12 @@
       if (lp.status === 'pending' && rp.status !== 'pending') byId.set(rp.id, rp);
     }
     out.kiProposals = [...byId.values()];
+    // Retired tasks: the most recent decision wins, in either direction —
+    // suppressing on one device and reinstating on the other must not fight.
+    for (const [id, rs] of Object.entries(remote.suppressedTasks || {})) {
+      const ls = out.suppressedTasks[id];
+      if (!ls || (rs.since || '') > (ls.since || '')) out.suppressedTasks[id] = rs;
+    }
     // History has no ids — key on the fields that identify one logged action.
     out.history = mergeById(out.history, remote.history,
       h => `${h.date}|${h.taskId}|${h.plantId}|${h.title}`)
