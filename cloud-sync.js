@@ -38,7 +38,7 @@
    Depends on app.js globals: state, buildPayload, buildDossierPayload,
    gmPhotoFileName, applyKiDiagnosis, importKiPhoto, slugify, migrateState,
    normalizeState, restorePhotos, putPhoto, cleanupV12, save, renderAll, toast,
-   photoCache, loadPhotos. Optional: window.KiDiagnose (catch-up after a merge).
+   photoCache, loadPhotos.
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
@@ -379,18 +379,20 @@
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     out.customPlants = mergeById(out.customPlants, remote.customPlants, 'id');
     out.customTasks = mergeById(out.customTasks, remote.customTasks, 'id');
-    out.kiQuestions = mergeById(out.kiQuestions, remote.kiQuestions, 'id');
     // History has no ids — key on the fields that identify one logged action.
     out.history = mergeById(out.history, remote.history,
       h => `${h.date}|${h.taskId}|${h.plantId}|${h.title}`)
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     // Read markers are additive: read on either device means read.
     out.kiRead = { ...(remote.kiRead || {}), ...(out.kiRead || {}) };
-    // Photo metadata: union by key; a finished diagnosis beats a pending one.
+    // Photo metadata: union by key. If one device has already assigned the
+    // photo to a plant and the other has not, the assignment wins; "ignored"
+    // is sticky so a photo hidden on one device stays hidden on the other.
     for (const [k, rm] of Object.entries(remote.photoMeta || {})) {
       const lm = out.photoMeta[k];
       if (!lm) { out.photoMeta[k] = rm; continue; }
-      if (lm.diag !== 'done' && rm.diag === 'done') out.photoMeta[k] = rm;
+      if (!lm.plantId && rm.plantId) out.photoMeta[k] = { ...rm, ignored: lm.ignored || rm.ignored };
+      else if (rm.ignored) out.photoMeta[k] = { ...lm, ignored: true };
     }
     out.meta = out.meta || {};
     out.meta.lastCloudMerge = new Date().toISOString();
@@ -413,9 +415,6 @@
       save(false);
       renderAll();
     } finally { applyingRemote = false; }
-    // Photos that arrived from the other device may never have been diagnosed
-    // (that device had no key yet). Pick them up here — see catchUp().
-    if (window.KiDiagnose) { try { await KiDiagnose.catchUp(); } catch (e) {} }
   }
 
   // Pull-and-merge when Drive holds changes this device has not seen yet.
