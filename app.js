@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v32';
+const APP_BUILD='v33';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -1359,6 +1359,24 @@ async function startApp(){
   await createLocalSnapshot('automatisch',false);
   if(window.CloudSync)CloudSync.init();
   if(window.KiDiagnose)KiDiagnose.init();
-  if('serviceWorker' in navigator){try{await navigator.serviceWorker.register('service-worker.js')}catch(e){console.warn('SW nicht registriert',e)}}
+  /* Updating a home-screen PWA is otherwise unreliable, especially on iOS: the
+     browser only re-checks the worker on a real navigation, and relaunching an
+     installed app frequently restores it instead of navigating. A device can
+     then serve old code indefinitely — which happened, and is painful to spot.
+     Three things make it self-correcting:
+       updateViaCache:'none'  – always fetch the worker script from the network
+       reg.update()           – ask explicitly on every launch, not just on nav
+       controllerchange       – when a new worker takes over, reload once so the
+                                running JavaScript matches the new cache */
+  if('serviceWorker' in navigator){
+    try{
+      const reg=await navigator.serviceWorker.register('service-worker.js',{updateViaCache:'none'});
+      reg.update().catch(()=>{});
+      let reloaded=false;
+      navigator.serviceWorker.addEventListener('controllerchange',()=>{
+        if(reloaded)return;reloaded=true;location.reload();
+      });
+    }catch(e){console.warn('SW nicht registriert',e)}
+  }
 }
 startApp();
