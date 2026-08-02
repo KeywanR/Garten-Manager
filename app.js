@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v30';
+const APP_BUILD='v31';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -302,18 +302,31 @@ function stampChanges(){
   });
   tsSnapshot=tsSnapshotOf(state);
 }
-/* One-off on upgrade: stamp everything that predates this change, so the two
-   devices are not left comparing two unstamped copies with no way to order
-   them. Also mints a stable device id used only to break exact ties. */
+/* One-off on upgrade: stamp records that predate this change.
+
+   These stamps must NOT be "now". Each device migrates whenever it first opens
+   the new build, so stamping with the current time hands victory to whichever
+   device upgraded LAST — which, if that is the out-of-date device, means its
+   stale copy legitimately beats the good one. That is a real failure that
+   happened, not a hypothetical.
+
+   Instead, derive the stamp from whatever date the record already carries, and
+   fall back to the epoch. Historical records then keep their true relative
+   order, and any genuine edit made after the upgrade beats all of them. */
+const TS_EPOCH='1970-01-01T00:00:00.000Z';
+const asTs=d=>(typeof d==='string'&&/^\d{4}-\d{2}-\d{2}/.test(d))?new Date(d+'T12:00:00.000Z').toISOString():TS_EPOCH;
 function migrateTimestamps(){
   state.meta=state.meta||{};
   if(!state.meta.deviceId)state.meta.deviceId='d-'+Math.random().toString(36).slice(2,10);
-  if(state.meta.tsMigrated)return;
-  const ts=nowTs();
-  TS_MAPS.forEach(g=>Object.values(state[g]||{}).forEach(v=>{if(v&&typeof v==='object'&&!v.ts)v.ts=ts}));
-  TS_LISTS.forEach(g=>(state[g]||[]).forEach(v=>{if(v&&!v.ts)v.ts=ts}));
-  Object.keys(state.kiRead||{}).forEach(k=>{if(typeof state.kiRead[k]!=='string')state.kiRead[k]=ts});
-  state.meta.tsMigrated=true;
+  if(state.meta.tsMigrated===2)return;
+  const pick=v=>asTs(v.ts&&v.ts.length>10?null:(v.updated||v.last||v.since||v.date||v.decidedAt));
+  TS_MAPS.forEach(g=>Object.values(state[g]||{}).forEach(v=>{
+    if(v&&typeof v==='object'&&(!v.ts||state.meta.tsMigrated===true))v.ts=pick(v)}));
+  TS_LISTS.forEach(g=>(state[g]||[]).forEach(v=>{
+    if(v&&(!v.ts||state.meta.tsMigrated===true))v.ts=pick(v)}));
+  Object.keys(state.kiRead||{}).forEach(k=>{
+    if(typeof state.kiRead[k]!=='string')state.kiRead[k]=TS_EPOCH});
+  state.meta.tsMigrated=2;
   tsSnapshot=null;save(false);
 }
 
