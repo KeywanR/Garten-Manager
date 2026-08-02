@@ -451,6 +451,7 @@
       cleanupV12(false);
       resetTsBaseline();
       save(false);
+      dedupeKiFindings();
       renderAll();
     } finally { applyingRemote = false; }
   }
