@@ -48,6 +48,14 @@
   // connector writes (files from other apps are invisible under drive.file).
   const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
   const FOLDER_NAME = 'Garten-Manager';
+  /* The data folder is pinned by ID, not found by name. There is more than one
+     folder called "Garten-Manager" in this Drive — the other holds the app's
+     source code — and searching by name let one device latch onto the wrong
+     one. It then synced perfectly, to a folder the other device never reads:
+     both reported "Gesichert", neither ever saw the other's data, and no amount
+     of fixing the merge could help because they were not sharing a file at all.
+     A name is not an identity; the id is. */
+  const FOLDER_ID = '1gf3X6Ia1iVLBYoOfm94S37DioQ67Mby8';
   const FILE_NAME = 'gartenmanager-data.json';
   const KI_FILE_NAME = 'gartenmanager-ki-akte.json';
   const PHOTOS_FOLDER_NAME = 'photos';
@@ -153,18 +161,19 @@
   }
 
   async function ensureFolder() {
-    if (folderId) return folderId;
-    const found = await driveList(
-      "name='" + FOLDER_NAME + "' and mimeType='application/vnd.google-apps.folder' and trashed=false");
-    if (found.length) { folderId = found[0].id; }
-    else {
-      const res = await apiFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' })
-      });
-      folderId = (await res.json()).id;
+    if (folderId === FOLDER_ID) return folderId;
+    // A device that previously latched onto a different folder of the same name
+    // has cached ids pointing INTO that folder — the data file, the dossier, the
+    // photos subfolder and the upload index. Every one of them is wrong and must
+    // go, or the device keeps writing to the wrong place under a corrected
+    // folder id. Dropping the remote-time marker too forces a fresh merge.
+    if (folderId && folderId !== FOLDER_ID) {
+      console.warn('Falscher Drive-Ordner erkannt, wird korrigiert:', folderId, '->', FOLDER_ID);
+      fileId = ''; kiFileId = ''; photosFolderId = ''; photoIndex = {};
+      [LS_FILE, LS_KI_FILE, LS_PHOTOS_FOLDER, LS_PHOTO_INDEX, LS_REMOTE_TIME]
+        .forEach(k => { try { localStorage.removeItem(k); } catch (e) {} });
     }
+    folderId = FOLDER_ID;
     localStorage.setItem(LS_FOLDER, folderId);
     return folderId;
   }
