@@ -405,6 +405,7 @@
     for (const [k, v] of Object.entries(out.kiRead || {}))
       if (!kr[k] || String(v) < String(kr[k])) kr[k] = v;
     out.kiRead = kr;
+    out.kiApplied = { ...(remote.kiApplied || {}), ...(out.kiApplied || {}) };
 
     // Care-profile text is append-only and dated in place; a line-wise union
     // cannot lose either side's additions, which whole-record replacement would.
@@ -580,8 +581,13 @@
     const found = await driveList(
       "name='" + DIAG_FILE_NAME + "' and '" + folderId + "' in parents and trashed=false");
     if (!found.length) return;
-    let applied = {};
-    try { applied = JSON.parse(localStorage.getItem(LS_DIAG_APPLIED) || '{}') || {}; } catch (e) { applied = {}; }
+    // Which inbox entries are already applied is part of the shared state, not
+    // this device's localStorage. Kept per-device, each device re-applied every
+    // entry the other had already handled, creating a second copy of every
+    // finding and orphaning the read markers.
+    state.kiApplied = state.kiApplied || {};
+    const applied = state.kiApplied;
+    try { Object.assign(applied, JSON.parse(localStorage.getItem(LS_DIAG_APPLIED) || '{}') || {}); } catch (e) {}
     let changed = 0;
     found.sort((a, b) => (b.modifiedTime || '').localeCompare(a.modifiedTime || ''));
     for (const f of found) {
@@ -611,6 +617,7 @@
       }
     }
     localStorage.setItem(LS_DIAG_APPLIED, JSON.stringify(applied));
+    state.kiApplied = applied;
     if (changed) { save(false); renderAll(); toast('KI-Diagnose übernommen (' + changed + ')'); }
   }
 
