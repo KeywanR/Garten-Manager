@@ -7,6 +7,12 @@
 
 const LEGACY_KEY='duengekalender_v1', APP_KEY='gartenmanager_v2';
 const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
+/* Build of the code itself. DATA_VERSION is the storage format and has not moved
+   since v12 — it says nothing about which JavaScript a device is running, which
+   made a stale device impossible to spot. Keep this in step with CACHE in
+   service-worker.js; the app compares the two at runtime and says so if they
+   disagree. */
+const APP_BUILD='v28';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -983,8 +989,36 @@ function renderSettings(){
   if(di)di.textContent=state.meta?.lastDossierAt?`Letzter KI-Export: ${new Date(state.meta.lastDossierAt).toLocaleString('de-AT')}`:'Noch kein KI-Export';
   if(stgl)stgl.textContent=state.showAllSeasons?'Nur saisonale Aufgaben anzeigen':'Auch außersaisonale anzeigen';
   if(window.CloudSync)CloudSync.renderStatus();
+  renderBuildInfo();
 }
 function toggleSeasons(){state.showAllSeasons=!state.showAllSeasons;save();renderAll()}
+
+/* What is this device actually running? The loaded JavaScript reports APP_BUILD;
+   the service worker's cache name is what will be served on the next launch. If
+   they differ, the device is mid-update and a close-and-reopen is needed — which
+   is exactly the state that is otherwise invisible and produces "but I changed
+   that hours ago". */
+async function renderBuildInfo(){
+  const el=document.getElementById('buildInfo'),foot=document.getElementById('footerInfo');
+  let cache='—';
+  try{
+    if(window.caches){
+      const keys=await caches.keys();
+      const mine=keys.filter(k=>k.startsWith('mein-garten-')).sort();
+      if(mine.length)cache=mine[mine.length-1].replace('mein-garten-','');
+    }
+  }catch(e){}
+  const sw=('serviceWorker' in navigator)&&navigator.serviceWorker.controller?'aktiv':'nicht aktiv';
+  const stale=cache!=='—'&&cache!==APP_BUILD;
+  if(foot)foot.textContent=`Code ${APP_BUILD} · Datenformat ${DATA_VERSION} · installierbar als App.`;
+  if(el){
+    el.innerHTML=`<div>Geladener Code: <strong>${esc(APP_BUILD)}</strong></div>
+      <div>Offline-Cache: <strong>${esc(cache)}</strong> (Service Worker ${sw})</div>
+      <div>Datenformat: ${DATA_VERSION}</div>
+      ${stale?`<div style="color:var(--berry);font-weight:700;margin-top:6px">
+        ⚠ Cache und Code sind nicht identisch – App einmal schließen und neu öffnen.</div>`:''}`;
+  }
+}
 
 function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings();
   if(window.KiDiagnose)KiDiagnose.render()}
@@ -1197,9 +1231,13 @@ async function buildDossierPayload(includePhotos){
   // Decisions already taken, so nothing rejected gets proposed again.
   const proposals=(state.kiProposals||[]).map(p=>({id:p.id,type:p.type,plantId:p.plantId,
     title:p.title,status:p.status,date:p.date,decidedAt:p.decidedAt||''}));
+  // Read markers are exported purely so this state is observable from outside
+  // the app. Without them, "did my confirmations survive the sync?" cannot be
+  // answered from Drive at all — which is exactly the question that came up.
+  const readMarkers=Object.keys(state.kiRead||{});
   const payload={
     format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
-    unassignedPhotos,kiProposals:proposals,
+    appBuild:APP_BUILD,unassignedPhotos,kiProposals:proposals,readMarkers,
     readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen.'+(includePhotos
       ?' Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).'
       :' Jedes Foto liegt als eigene Bilddatei im Drive-Unterordner "photos/" (Dateiname = photos[].driveFile). Der Ordner ist ein reines Archiv: auch in der App gelöschte Fotos und ersetzte Titelbilder bleiben dort als Verlauf erhalten (Titelbild-Versionen = frühere Bilder der Fotohistorie).'),
