@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v29';
+const APP_BUILD='v30';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -254,7 +254,70 @@ const diff=s=>Math.round((parse(s)-parse(today()))/86400000);
 const fmt=s=>s?new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}).format(parse(s)):'—';
 const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(parse(v).getTime());
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],suppressedTasks:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+/* ---------------------------------------------------- change timestamps ----- */
+/* Every mutable record carries `ts`, the moment it last changed, and the sync
+   merge resolves conflicts by "later ts wins" — one rule instead of a different
+   heuristic per record type. Previously recency was inferred from whatever the
+   data happened to contain (a completion date, an `updated` day), and where it
+   could not be inferred the local side won, which let a stale device hold its
+   ground indefinitely. Day-resolution dates made that the common case rather
+   than an edge case, because most edits happen on the same day.
+
+   Stamping is done centrally in save() by diffing against the previously saved
+   state, rather than by hand at each mutation site — there are ~20 of those and
+   any one missed would silently reintroduce the bug. The same diff detects
+   removals and writes tombstones, so a deletion on one device is no longer
+   undone by the other device's surviving copy. */
+const nowTs=()=>new Date().toISOString();
+const TS_MAPS=['tasks','health','profiles','photoMeta','suppressedTasks'];
+const TS_LISTS=['customPlants','customTasks','kiProposals','observations'];
+let tsSnapshot=null;
+
+const tsBody=v=>{if(!v||typeof v!=='object')return JSON.stringify(v);
+  const c={...v};delete c.ts;return JSON.stringify(c)};
+function tsSnapshotOf(st){
+  const s={};
+  TS_MAPS.forEach(g=>{s[g]={};Object.entries(st[g]||{}).forEach(([k,v])=>s[g][k]=tsBody(v))});
+  TS_LISTS.forEach(g=>{s[g]={};(st[g]||[]).forEach(v=>{if(v&&v.id)s[g][v.id]=tsBody(v)})});
+  return s;
+}
+function stampChanges(){
+  const ts=nowTs();
+  state.tombstones=state.tombstones||{};
+  // Read markers store the moment they were read, not `true` — a truthy string
+  // keeps every existing check working while making them mergeable.
+  Object.keys(state.kiRead||{}).forEach(k=>{if(typeof state.kiRead[k]!=='string')state.kiRead[k]=ts});
+  if(!tsSnapshot){tsSnapshot=tsSnapshotOf(state);return}
+  TS_MAPS.forEach(g=>{
+    const cur=state[g]||{},prev=tsSnapshot[g]||{};
+    Object.entries(cur).forEach(([k,v])=>{
+      if(v&&typeof v==='object'&&prev[k]!==tsBody(v))v.ts=ts});
+    Object.keys(prev).forEach(k=>{if(!(k in cur))state.tombstones[`${g}:${k}`]=ts});
+  });
+  TS_LISTS.forEach(g=>{
+    const cur=state[g]||[],prev=tsSnapshot[g]||{},seen=new Set();
+    cur.forEach(v=>{if(!v||!v.id)return;seen.add(v.id);
+      if(prev[v.id]!==tsBody(v))v.ts=ts});
+    Object.keys(prev).forEach(k=>{if(!seen.has(k))state.tombstones[`${g}:${k}`]=ts});
+  });
+  tsSnapshot=tsSnapshotOf(state);
+}
+/* One-off on upgrade: stamp everything that predates this change, so the two
+   devices are not left comparing two unstamped copies with no way to order
+   them. Also mints a stable device id used only to break exact ties. */
+function migrateTimestamps(){
+  state.meta=state.meta||{};
+  if(!state.meta.deviceId)state.meta.deviceId='d-'+Math.random().toString(36).slice(2,10);
+  if(state.meta.tsMigrated)return;
+  const ts=nowTs();
+  TS_MAPS.forEach(g=>Object.values(state[g]||{}).forEach(v=>{if(v&&typeof v==='object'&&!v.ts)v.ts=ts}));
+  TS_LISTS.forEach(g=>(state[g]||[]).forEach(v=>{if(v&&!v.ts)v.ts=ts}));
+  Object.keys(state.kiRead||{}).forEach(k=>{if(typeof state.kiRead[k]!=='string')state.kiRead[k]=ts});
+  state.meta.tsMigrated=true;
+  tsSnapshot=null;save(false);
+}
+
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],suppressedTasks:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -270,6 +333,7 @@ function normalizeState(raw){
   out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
   out.kiProposals=Array.isArray(x.kiProposals)?x.kiProposals:[];
   out.suppressedTasks=(x.suppressedTasks&&typeof x.suppressedTasks==='object'&&!Array.isArray(x.suppressedTasks))?x.suppressedTasks:{};
+  out.tombstones=(x.tombstones&&typeof x.tombstones==='object'&&!Array.isArray(x.tombstones))?x.tombstones:{};
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
   out.dataVersion=DATA_VERSION;
@@ -315,7 +379,7 @@ function load(){
 
 let snapshotTimer;
 function save(scheduleSnapshot=true){
-  state=normalizeState(state); state.meta.updated=new Date().toISOString();
+  state=normalizeState(state); stampChanges(); state.meta.updated=new Date().toISOString();
   try{localStorage.setItem(APP_KEY,JSON.stringify(state))}
   catch(e){alert('Die lokalen Daten konnten nicht gespeichert werden. Bitte sofort eine Sicherung exportieren.');console.error(e)}
   if(window.CloudSync)CloudSync.onLocalChange();
@@ -1273,6 +1337,7 @@ async function startApp(){
   rebuildCatalog();
   await migrateOldPhotoDB();
   await loadPhotos();
+  migrateTimestamps();
   cleanupV12(false);
   initializeCareTasks();
   if(!state.migrated)migrateLegacy();
