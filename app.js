@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v37';
+const APP_BUILD='v38';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -349,7 +349,6 @@ function migrateTimestamps(){
    the marker is not orphaned, and carry the read state onto the survivor. */
 function dedupeKiFindings(){
   state.meta=state.meta||{};
-  if(state.meta.kiDedupe)return;
   const groups={};
   (state.observations||[]).filter(o=>o&&o.type==='KI-Diagnose').forEach(o=>{
     const k=`${o.plantId}|${o.date}|${o.text}`;(groups[k]=groups[k]||[]).push(o)});
@@ -365,9 +364,8 @@ function dedupeKiFindings(){
     state.observations=state.observations.filter(o=>!drop.has(o.id));
     // These are duplicates, not deletions — no tombstones, or the survivor
     // would be deleted on the other device too.
-    state.kiRead=read;resetTsBaseline();
+    state.kiRead=read;resetTsBaseline();save(false);
   }
-  state.meta.kiDedupe=1;save(false);
 }
 
 function purgeBadTaskTombstones(){
