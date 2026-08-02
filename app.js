@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v34';
+const APP_BUILD='v36';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -302,6 +302,13 @@ function stampChanges(){
   });
   tsSnapshot=tsSnapshotOf(state);
 }
+/* Call after REPLACING state wholesale — adopting the cloud copy, importing a
+   backup, restoring a snapshot. Without this, stampChanges compares the new
+   state against the old one, sees every record the replacement does not contain
+   as "deleted here", and writes tombstones for all of them — which then
+   propagate and delete those records on the other device. Replacing local data
+   must never be interpreted as a deliberate deletion of what it replaced. */
+function resetTsBaseline(){tsSnapshot=tsSnapshotOf(state)}
 /* One-off on upgrade: stamp records that predate this change.
 
    These stamps must NOT be "now". Each device migrates whenever it first opens
@@ -328,6 +335,21 @@ function migrateTimestamps(){
     if(typeof state.kiRead[k]!=='string')state.kiRead[k]=TS_EPOCH});
   state.meta.tsMigrated=2;
   tsSnapshot=null;save(false);
+}
+
+/* One-off repair. A bug in the sync path ran the v12 cleanup against a stale
+   task catalogue on every pull, deleting the task state of custom plants and —
+   once tombstones existed — propagating those deletions to the other device.
+   The cause is fixed, but the tombstones it already wrote would keep deleting
+   tasks forever. Drop them once; genuine task deletions are rare and re-doing
+   one by hand is far cheaper than losing care history on every sync. */
+function purgeBadTaskTombstones(){
+  state.meta=state.meta||{};
+  if(state.meta.taskTombstonePurge)return;
+  const t=state.tombstones||{};
+  Object.keys(t).forEach(k=>{if(k.startsWith('tasks:'))delete t[k]});
+  state.meta.taskTombstonePurge=1;
+  save(false);
 }
 
 function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],suppressedTasks:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
@@ -1169,7 +1191,10 @@ function importData(){
       if(!confirm(`Sicherung importieren?\n\n${taskCount} Aufgabenstände\n${journalCount} Journaleinträge\n${photoCount} Fotos\n\nDie aktuellen Daten werden vorher lokal gesichert.`))return;
       await createLocalSnapshot('vor Import',false);
       state=migrateState(st);const n=await restorePhotos(photos);
-      cleanupV12(true);save(false);await runIntegrityCheck(false);renderAll();
+      // Rebuild the catalogue from the imported data before cleanup judges which
+      // task ids are valid — otherwise importing a backup silently drops the
+      // task history of every custom plant it contains.
+      rebuildCatalog();cleanupV12(false);resetTsBaseline();save(false);await runIntegrityCheck(false);renderAll();
       toast(`Daten importiert · ${n} Fotos wiederhergestellt`);
     }catch(err){console.error(err);alert(`Import fehlgeschlagen:\n${err.message||err}`)}};
     r.readAsText(f)};
@@ -1198,7 +1223,7 @@ async function restoreLatestSnapshot(){
   if(!confirm(`Schnappschuss vom ${new Date(snap.created).toLocaleString('de-AT')} wiederherstellen? Aktuelle Daten werden vorher gesichert.`))return;
   await createLocalSnapshot('vor Wiederherstellung',false);
   state=migrateState(snap.payload.state);await restorePhotos(snap.payload.photos||{});
-  save(false);renderAll();toast('Schnappschuss wiederhergestellt');
+  rebuildCatalog();resetTsBaseline();save(false);renderAll();toast('Schnappschuss wiederhergestellt');
 }
 
 /* Recovery: list every stored snapshot with its content counts so the user can
@@ -1231,7 +1256,7 @@ async function restoreSnapshotById(id){
   if(!confirm(`Wiederherstellungspunkt vom ${new Date(snap.created).toLocaleString('de-AT')} laden?\n\n${nPhotos} Foto(s) enthalten.\n\nDie aktuellen Daten werden vorher gesichert.`))return;
   await createLocalSnapshot('vor Wiederherstellung',false);
   state=migrateState(snap.payload.state);await restorePhotos(snap.payload.photos||{});
-  save(false);renderAll();renderSnapshotList();toast('Wiederherstellungspunkt geladen');
+  rebuildCatalog();resetTsBaseline();save(false);renderAll();renderSnapshotList();toast('Wiederherstellungspunkt geladen');
 }
 
 async function runIntegrityCheck(announce=false){
@@ -1365,6 +1390,7 @@ async function startApp(){
   await migrateOldPhotoDB();
   await loadPhotos();
   migrateTimestamps();
+  purgeBadTaskTombstones();
   cleanupV12(false);
   initializeCareTasks();
   if(!state.migrated)migrateLegacy();
