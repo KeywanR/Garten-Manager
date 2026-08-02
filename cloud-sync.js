@@ -13,11 +13,11 @@
    Sync model: multi-device. On change → debounced upload, but never a blind
    overwrite: before every push we compare Drive's modifiedTime against the last
    copy this device saw, and merge anything newer in first (mergeStates). The
-   merge is per record, not per file — tasks by their completion date, health by
-   its updated date, observations / photos / plants / questions by their unique
-   ids. On startup a device with no local data adopts the cloud copy wholesale;
-   any other device merges and pushes the union. An emptier copy can never
-   overwrite real data, in either direction.
+   merge is per record, not per file, and resolves by ONE rule: the side whose
+   `ts` is later wins. Deletions carry tombstones so a removal is not undone by
+   the other device's surviving copy. On startup a device with no local data
+   adopts the cloud copy wholesale; any other device merges and pushes the
+   union. An emptier copy can never overwrite real data, in either direction.
 
    Alongside the data file, every push also regenerates and uploads the
    KI-Akte (gartenmanager-ki-akte.json, photo data excluded — it lives in the
@@ -352,74 +352,79 @@
      whole-file overwrite, which made whichever device synced last win outright
      and silently discard the other device's work. Every record type here is
      either dated (take the newer) or uniquely keyed (union). */
+  /* Timestamp-based merge: for every record, the side that changed it later
+     wins. Records carry `ts` (see stampChanges in app.js); a record with no `ts`
+     predates the change and counts as oldest. Tombstones record deletions, so a
+     record deleted on one device is not resurrected by the other's copy — and a
+     later edit still beats an earlier deletion.
+
+     This replaces a per-type heuristic scheme where recency was inferred from
+     whatever field happened to be present, and where an undecidable comparison
+     let the local side win — which is how two devices ended up holding
+     different state indefinitely, each convinced it was right. */
+  const TS_MAPS = ['tasks', 'health', 'photoMeta', 'suppressedTasks'];
+  const TS_LISTS = ['customPlants', 'customTasks', 'kiProposals', 'observations'];
+  const tsOf = r => (r && r.ts) || '';
+
   function mergeStates(local, remote) {
     const out = local;
+    out.tombstones = out.tombstones || {};
+    for (const [k, v] of Object.entries(remote.tombstones || {}))
+      if (!out.tombstones[k] || v > out.tombstones[k]) out.tombstones[k] = v;
 
-    // Tasks: whichever device completed the task more recently is right.
-    for (const [id, rt] of Object.entries(remote.tasks || {})) {
-      const lt = out.tasks[id];
-      if (!lt) { out.tasks[id] = rt; continue; }
-      if ((rt.last || '') > (lt.last || '')) out.tasks[id] = rt;
+    for (const g of TS_MAPS) {
+      const l = out[g] || {};
+      for (const [k, rv] of Object.entries(remote[g] || {}))
+        if (!l[k] || tsOf(rv) > tsOf(l[k])) l[k] = rv;
+      for (const k of Object.keys(l)) {
+        const t = out.tombstones[`${g}:${k}`];
+        if (t && t > tsOf(l[k])) delete l[k];       // deleted after its last edit
+      }
+      out[g] = l;
     }
-    // Health: newest assessment wins.
-    for (const [id, rh] of Object.entries(remote.health || {})) {
-      const lh = out.health[id];
-      if (!lh || (rh.updated || '') > (lh.updated || '')) out.health[id] = rh;
+
+    for (const g of TS_LISTS) {
+      const byId = new Map((out[g] || []).filter(x => x && x.id).map(x => [x.id, x]));
+      for (const rv of remote[g] || []) {
+        if (!rv || !rv.id) continue;
+        const lv = byId.get(rv.id);
+        if (!lv || tsOf(rv) > tsOf(lv)) byId.set(rv.id, rv);
+      }
+      for (const k of [...byId.keys()]) {
+        const t = out.tombstones[`${g}:${k}`];
+        if (t && t > tsOf(byId.get(k))) byId.delete(k);
+      }
+      out[g] = [...byId.values()];
     }
-    // Profiles: append-only text, union per field.
+    if (Array.isArray(out.observations))
+      out.observations.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    // Read markers hold the moment they were read. Union, keeping the earliest —
+    // once read on any device it stays read everywhere.
+    const kr = { ...(remote.kiRead || {}) };
+    for (const [k, v] of Object.entries(out.kiRead || {}))
+      if (!kr[k] || String(v) < String(kr[k])) kr[k] = v;
+    out.kiRead = kr;
+
+    // Care-profile text is append-only and dated in place; a line-wise union
+    // cannot lose either side's additions, which whole-record replacement would.
     for (const [id, rp] of Object.entries(remote.profiles || {})) {
       const lp = out.profiles[id];
       if (!lp) { out.profiles[id] = rp; continue; }
       const m = { ...lp };
-      for (const f of Object.keys(rp)) m[f] = mergeText(lp[f], rp[f]);
+      for (const f of Object.keys(rp)) if (f !== 'ts') m[f] = mergeText(lp[f], rp[f]);
+      m.ts = tsOf(rp) > tsOf(lp) ? tsOf(rp) : tsOf(lp);
       out.profiles[id] = m;
     }
-    // Uniquely-keyed collections: plain union.
-    out.observations = mergeById(out.observations, remote.observations, 'id')
-      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    out.customPlants = mergeById(out.customPlants, remote.customPlants, 'id');
-    out.customTasks = mergeById(out.customTasks, remote.customTasks, 'id');
-    // Plants: union by id, but an edited plant beats an unreviewed one — if
-    // either device has confirmed/corrected it, the "from KI" flag is gone.
-    out.customPlants = mergeById(out.customPlants, remote.customPlants, 'id').map(p => {
-      const r = (remote.customPlants || []).find(x => x.id === p.id);
-      if (r && p.fromKi && !r.fromKi) return r;
-      return p;
-    });
-    // Proposals: union by id, but a decision always beats "pending". Confirming
-    // on the iPad must not revert because the phone still shows it as open.
-    const byId = new Map((out.kiProposals || []).map(p => [p.id, p]));
-    for (const rp of remote.kiProposals || []) {
-      const lp = byId.get(rp.id);
-      if (!lp) { byId.set(rp.id, rp); continue; }
-      if (lp.status === 'pending' && rp.status !== 'pending') byId.set(rp.id, rp);
-    }
-    out.kiProposals = [...byId.values()];
-    // Retired tasks: the most recent decision wins, in either direction —
-    // suppressing on one device and reinstating on the other must not fight.
-    for (const [id, rs] of Object.entries(remote.suppressedTasks || {})) {
-      const ls = out.suppressedTasks[id];
-      if (!ls || (rs.since || '') > (ls.since || '')) out.suppressedTasks[id] = rs;
-    }
-    // History has no ids — key on the fields that identify one logged action.
+
     out.history = mergeById(out.history, remote.history,
       h => `${h.date}|${h.taskId}|${h.plantId}|${h.title}`)
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    // Read markers are additive: read on either device means read.
-    out.kiRead = { ...(remote.kiRead || {}), ...(out.kiRead || {}) };
-    // Photo metadata: union by key. If one device has already assigned the
-    // photo to a plant and the other has not, the assignment wins; "ignored"
-    // is sticky so a photo hidden on one device stays hidden on the other.
-    for (const [k, rm] of Object.entries(remote.photoMeta || {})) {
-      const lm = out.photoMeta[k];
-      if (!lm) { out.photoMeta[k] = rm; continue; }
-      if (!lm.plantId && rm.plantId) out.photoMeta[k] = { ...rm, ignored: lm.ignored || rm.ignored };
-      else if (rm.ignored) out.photoMeta[k] = { ...lm, ignored: true };
-    }
     out.meta = out.meta || {};
     out.meta.lastCloudMerge = new Date().toISOString();
     return out;
   }
+
 
   // Merge the remote copy (state + any photos we don't have) into local state.
   async function mergeRemote(remote) {

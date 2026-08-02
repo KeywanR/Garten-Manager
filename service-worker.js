@@ -1,6 +1,6 @@
 /* Mein Garten – offline service worker.
    Precaches the app shell so it runs with no connection. Bump CACHE on changes. */
-const CACHE = 'mein-garten-v29';
+const CACHE = 'mein-garten-v30';
 const ASSETS = [
   './',
   './index.html',
