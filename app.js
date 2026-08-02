@@ -236,7 +236,7 @@ const diff=s=>Math.round((parse(s)-parse(today()))/86400000);
 const fmt=s=>s?new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}).format(parse(s)):'—';
 const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(parse(v).getTime());
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -250,6 +250,7 @@ function normalizeState(raw){
   out.customPlants=Array.isArray(x.customPlants)?x.customPlants:[];
   out.customTasks=Array.isArray(x.customTasks)?x.customTasks:[];
   out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
+  out.kiProposals=Array.isArray(x.kiProposals)?x.kiProposals:[];
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
   out.dataVersion=DATA_VERSION;
@@ -477,6 +478,9 @@ const PROFILE_LABELS={location:'Standort / Gartenbereich',planted:'Gepflanzt / A
 const profileFor=id=>{const b={};PROFILE_FIELDS.forEach(f=>b[f]='');return {...b,...(state.profiles[id]||{})}};
 function saveProfile(id){
   const p={};PROFILE_FIELDS.forEach(f=>p[f]=(document.getElementById(`pf-${f}`)?.value||'').trim());
+  // Stamp the edit so the diagnosis routine can tell user-authored care text
+  // from its own earlier suggestions and defer to yours.
+  p.updated=today();
   state.profiles[id]=p;
   state.history.unshift({date:today(),taskId:'profile',plantId:id,title:'Pflanzenakte aktualisiert'});
   save();renderPlants();openPlantFile(id);toast('Pflanzenakte gespeichert');
@@ -522,8 +526,14 @@ function applyKiDiagnosis(e){
     const ap=e.addPlant,id=ap.id||slugify(ap.name);
     if(id&&!plant(id)){
       state.customPlants=state.customPlants||[];
-      state.customPlants.push({id,name:ap.name,cat:ap.cat||'Zimmerpflanzen',note:ap.note||''});
+      state.customPlants.push({id,name:ap.name,cat:ap.cat||'Zimmerpflanzen',note:ap.note||'',fromKi:true});
       if(!(Array.isArray(e.addTasks)&&e.addTasks.length))addDefaultTasksFor(id,ap.cat||'Zimmerpflanzen');
+      // A plant identified from a photo is a guess about a real thing in the
+      // garden. Surface it for review so the name/category can be corrected
+      // rather than silently entering the catalogue as fact.
+      if(ap.needsReview!==false)addProposal({id:`${e.id||'ki'}-newplant`,plantId:id,type:'newPlant',
+        title:`Neue Pflanze erkannt: ${ap.name}`,
+        detail:ap.note||'Bitte Name, Kategorie und Notiz prüfen und bestätigen.',date:d});
       changed=true;
     }
     e={...e,plantId:e.plantId||id};
@@ -539,6 +549,23 @@ function applyKiDiagnosis(e){
         interval:Number(t.interval)||14,months:t.months,note:t.note||'',optional:!!t.optional});
       changed=true;
     }
+  }
+  // proposeTasks: like addTasks, but nothing reaches the care schedule until the
+  // user confirms it in the KI view. Treatment changes never apply silently.
+  if(Array.isArray(e.proposeTasks)&&e.proposeTasks.length&&e.plantId){
+    const tasks=e.proposeTasks.filter(t=>t&&t.type)
+      .filter(t=>{const tid=`${e.plantId}:${t.type}`;
+        return !state.customTasks.some(x=>x.id===tid)&&!baseDefs.some(b=>b.id===tid)});
+    if(tasks.length&&addProposal({id:`${e.id||'ki'}-tasks`,plantId:e.plantId,type:'tasks',
+      title:tasks.length===1?tasks[0].title||'Neue Pflegeaufgabe':`${tasks.length} neue Pflegeaufgaben`,
+      detail:tasks.map(t=>`${t.title||t.type}${t.reason?` – ${t.reason}`:''}`).join('\n'),
+      payload:{addTasks:tasks},date:d}))changed=true;
+  }
+  // assignPhoto: adopt a photo the app already holds but has not filed under any
+  // plant (imported via "Fotos importieren"). The inbox could previously only
+  // create plants or deliver new images — never re-home an orphan.
+  if(e.assignPhoto&&e.assignPhoto.file&&e.plantId){
+    if(assignDrivePhotoToPlant(e.assignPhoto.file,e.plantId,e.assignPhoto.caption||'',d))changed=true;
   }
   if(changed){rebuildCatalog();initializeCareTasks()}
   if(!plant(e.plantId))return changed;
@@ -572,6 +599,74 @@ function applyKiDiagnosis(e){
     state.profiles[e.plantId]=prof;
   }
   return changed;
+}
+
+/* ------------------------------------------------------- KI proposals ------- */
+/* A proposal is something the AI suggests but must not do on its own: a new
+   care task, or a plant it created from a photo. It sits pending in the KI view
+   until confirmed or rejected. Ids are deterministic, so the same suggestion
+   arriving twice (a re-run, a second device) never duplicates, and a decision
+   already taken is never reopened. Returns true if a new proposal was added. */
+function addProposal(p){
+  if(!p||!p.id)return false;
+  state.kiProposals=state.kiProposals||[];
+  if(state.kiProposals.some(x=>x.id===p.id))return false;
+  state.kiProposals.push({id:p.id,plantId:p.plantId||'',type:p.type||'tasks',
+    title:p.title||'Vorschlag',detail:p.detail||'',payload:p.payload||null,
+    date:p.date||today(),status:'pending',decidedAt:''});
+  return true;
+}
+const pendingProposals=()=>(state.kiProposals||[]).filter(p=>p.status==='pending');
+
+function confirmProposal(id){
+  const p=(state.kiProposals||[]).find(x=>x.id===id);
+  if(!p||p.status!=='pending')return;
+  if(p.type==='tasks'&&p.payload&&Array.isArray(p.payload.addTasks)){
+    // Reuse the proven merge path rather than a second task-writing code path.
+    applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:p.payload.addTasks});
+  }
+  if(p.type==='newPlant'){
+    const cp=(state.customPlants||[]).find(x=>x.id===p.plantId);
+    if(cp)delete cp.fromKi;
+  }
+  p.status='confirmed';p.decidedAt=today();
+  state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Bestätigt: ${p.title}`});
+  save();renderAll();toast('Bestätigt – Pflegeplan aktualisiert');
+}
+function rejectProposal(id){
+  const p=(state.kiProposals||[]).find(x=>x.id===id);
+  if(!p||p.status!=='pending')return;
+  p.status='rejected';p.decidedAt=today();
+  state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Abgelehnt: ${p.title}`});
+  save();renderAll();toast('Vorschlag abgelehnt');
+}
+
+/* Map a Drive photo filename back to the local photo key. cloud-sync records
+   the uploaded name per key in gm_drive_photo_index; if that is missing (older
+   uploads) fall back to recomputing the name from the key and its date. */
+function photoKeyForDriveFile(name){
+  if(!name)return '';
+  try{
+    const idx=JSON.parse(localStorage.getItem('gm_drive_photo_index')||'{}');
+    for(const [k,v] of Object.entries(idx))if(v&&v.name===name)return k;
+  }catch(e){}
+  for(const [k,m] of Object.entries(state.photoMeta||{})){
+    if(gmPhotoFileName(k,(m&&m.date)||'',photoCache[k])===name)return k;
+  }
+  return '';
+}
+function assignDrivePhotoToPlant(file,plantId,caption,date){
+  if(!plant(plantId))return false;
+  const key=photoKeyForDriveFile(file);
+  if(!key)return false;
+  const meta=state.photoMeta[key];
+  if(!meta||meta.plantId)return false;         // unknown, or already filed
+  meta.plantId=plantId;
+  if(caption)meta.caption=caption;
+  state.observations.unshift({id:`obs-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+    plantId,date:isDateString(date)?date:today(),type:'Foto',
+    text:caption||'Zugeordnetes Foto',photoKey:key});
+  return true;
 }
 
 /* -------------------------------------------------------------- photos ------ */
@@ -701,6 +796,7 @@ function updateHealthFromFile(id){
 function openPlantFile(id){
   const p=plant(id);if(!p)return;
   const h=healthFor(id),pf=profileFor(id);
+  const custom=(state.customPlants||[]).find(x=>x.id===id);
   const statuses=HEALTH_STATUSES;
   const ts=defs.filter(d=>d.plantId===id);
   const timeline=plantTimeline(id);
@@ -729,6 +825,15 @@ function openPlantFile(id){
           ${photoCache[id]?`<button class="btn danger" onclick="deleteCover('${id}')">Löschen</button>`:''}
         </div>
       </section>
+
+      ${custom?`<section class="fp full"><h3>🏷️ Pflanze bearbeiten ${custom.fromKi?'<span class="mini">von der KI erkannt – bitte prüfen</span>':''}</h3>
+        <div class="form-grid">
+          <div class="field"><label>Name</label><input id="pi-name" value="${esc(custom.name||'')}"></div>
+          <div class="field"><label>Kategorie</label><input id="pi-cat" value="${esc(custom.cat||'')}"></div>
+          <div class="field full"><label>Allgemeiner Hinweis</label><textarea id="pi-note">${esc(custom.note||'')}</textarea></div>
+        </div>
+        <button class="btn primary" onclick="savePlantIdentity('${id}')">Pflanze speichern</button>
+      </section>`:''}
 
       <section class="fp full"><h3>🌿 Stammdaten und Pflegehinweise</h3>
         <div class="form-grid">
@@ -775,6 +880,24 @@ function openPlantFile(id){
 
     </div></div></div>`;
 }
+/* Correct a plant the KI created (or that you added yourself). Editing clears
+   the "needs review" flag — your version is the authoritative one from then on,
+   and the diagnosis routine sees it in the next dossier. */
+function savePlantIdentity(id){
+  const cp=(state.customPlants||[]).find(x=>x.id===id);if(!cp)return;
+  const name=(document.getElementById('pi-name')?.value||'').trim();
+  if(!name)return alert('Der Name darf nicht leer sein.');
+  const cat=(document.getElementById('pi-cat')?.value||'').trim()||'Zimmerpflanzen';
+  const note=(document.getElementById('pi-note')?.value||'').trim();
+  const renamed=cp.name!==name;
+  cp.name=name;cp.cat=cat;cp.note=note;delete cp.fromKi;
+  (state.kiProposals||[]).forEach(p=>{
+    if(p.type==='newPlant'&&p.plantId===id&&p.status==='pending'){p.status='confirmed';p.decidedAt=today()}});
+  state.history.unshift({date:today(),taskId:'plant',plantId:id,
+    title:renamed?`Pflanze umbenannt: ${name}`:'Pflanzendaten aktualisiert'});
+  rebuildCatalog();save();renderAll();openPlantFile(id);toast('Pflanze gespeichert');
+}
+
 async function chooseCover(id){const f=await pickImage(false);if(f)await setCover(id,f)}
 function closePlantFile(){const el=document.getElementById('plantFile');el.classList.add('hidden');el.innerHTML=''}
 
@@ -992,8 +1115,18 @@ function gmDrivePhotoName(key,dataUrl){
 async function buildDossierPayload(includePhotos){
   await loadPhotos();
   const dossiers=plants.filter(p=>p.id!=='garten').map(p=>buildPlantDossier(p.id));
+  // Photos the app holds but has not filed under any plant (gallery imports).
+  // Without these the diagnosis routine cannot see them at all, because the
+  // per-plant dossiers group photos by plantId.
+  const unassignedPhotos=Object.entries(state.photoMeta||{})
+    .filter(([,m])=>m&&!m.plantId&&!m.ignored)
+    .map(([k,m])=>({driveFile:gmDrivePhotoName(k,photoCache[k]),date:m.date||'',caption:m.caption||''}));
+  // Decisions already taken, so nothing rejected gets proposed again.
+  const proposals=(state.kiProposals||[]).map(p=>({id:p.id,type:p.type,plantId:p.plantId,
+    title:p.title,status:p.status,date:p.date,decidedAt:p.decidedAt||''}));
   const payload={
     format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
+    unassignedPhotos,kiProposals:proposals,
     readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen.'+(includePhotos
       ?' Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).'
       :' Jedes Foto liegt als eigene Bilddatei im Drive-Unterordner "photos/" (Dateiname = photos[].driveFile). Der Ordner ist ein reines Archiv: auch in der App gelöschte Fotos und ersetzte Titelbilder bleiben dort als Verlauf erhalten (Titelbild-Versionen = frühere Bilder der Fotohistorie).'),
