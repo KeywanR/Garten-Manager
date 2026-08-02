@@ -1,9 +1,26 @@
-# KI-Diagnose-Inbox
+# KI-Diagnose
 
-Wie Claude (Mozart) Diagnosen in die App zurückschreibt, ohne die
-Single-Writer-Regel zu verletzen (nur das iPad schreibt `gartenmanager-data.json`).
+Es gibt zwei Wege, wie eine Diagnose in die App kommt. Beide enden im selben
+geprüften Merge-Pfad (`applyKiDiagnosis` in `app.js`).
 
-## Ablauf
+## Weg 1 (Standard): direkt auf dem Gerät
+
+Seit v24 ruft die App die Claude-API selbst auf, sobald ein Foto entsteht —
+siehe `ki-diagnose.js`. Foto aufnehmen oder importieren, Diagnose in Sekunden,
+kein Laptop und kein Zeitplan nötig. Der API-Schlüssel liegt nur in
+`localStorage` des jeweiligen Geräts (Reiter „Daten & KI“) und wird **nie** mit
+Drive synchronisiert; jedes Gerät braucht ihn einmal. Ohne Schlüssel wird das
+Foto normal gespeichert und später nachdiagnostiziert (`catchUp`).
+
+Das Antwortschema (`output_config.format`) spiegelt `HEALTH_STATUSES` als
+`enum`, deshalb kann über diesen Weg kein unbekannter Status entstehen.
+
+## Weg 2: Inbox über Google Drive
+
+Der ursprüngliche Weg, weiterhin gültig — z. B. wenn Claude am PC eine
+Sammelauswertung schreibt.
+
+## Ablauf (Weg 2)
 
 1. Claude analysiert KI-Akte + Fotos aus Drive.
 2. Claude erstellt/ergänzt per claude.ai-Drive-Connector die Datei
@@ -43,7 +60,9 @@ Regeln:
   jede id wird genau einmal angewandt.
 - `plantId` = Pflanzen-id aus der KI-Akte (`plants[].plant.id`).
 - `status` exakt einer der App-Werte: `🟢 Gesund`, `🟡 Beobachten`,
-  `🟠 Behandlung läuft`, `🔴 Krank`.
+  `🟠 Behandlung läuft`, `🔴 Handlungsbedarf`. Andere Werte werden von
+  `applyKiDiagnosis` verworfen (der bisherige Status bleibt bestehen) — die
+  Liste steht als `HEALTH_STATUSES` in `app.js` und ist die einzige Quelle.
 - `profile`-Felder: `location`, `planted`, `watering`, `fertilizing`,
   `diseases`, `treatments`, `harvest`, `notes` — Texte werden **angehängt**
   (datiert), nie überschrieben.

@@ -48,6 +48,9 @@ a{color:var(--leaf)}
 .nav button{font:inherit;border:1px solid var(--line);background:var(--card);border-radius:999px;
   padding:9px 15px;font-weight:750;cursor:pointer;white-space:nowrap;color:var(--ink)}
 .nav button.active{background:var(--leaf);color:#fff;border-color:var(--leaf)}
+.nav-badge{display:inline-block;min-width:20px;padding:1px 6px;margin-left:4px;border-radius:999px;
+  background:var(--berry);color:#fff;font-size:.74rem;font-weight:800;text-align:center;vertical-align:1px}
+.nav button.active .nav-badge{background:#fff;color:var(--leaf)}
 
 /* stats */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:6px 0 18px}
@@ -196,6 +199,7 @@ a{color:var(--leaf)}
     <button data-view="today" class="active">Heute</button>
     <button data-view="week">Diese Woche</button>
     <button data-view="plants">Pflanzen</button>
+    <button data-view="ki">KI-Diagnosen <span class="nav-badge" id="kiBadge" style="display:none"></span></button>
     <button data-view="journal">Journal</button>
     <button data-view="data">Daten &amp; KI</button>
   </nav>
@@ -213,8 +217,14 @@ a{color:var(--leaf)}
       <div class="toolbar">
         <input id="plantSearch" placeholder="Pflanze suchen …" aria-label="Pflanze suchen">
         <select id="catFilter" aria-label="Kategorie"><option value="all">Alle Kategorien</option></select>
+        <button class="btn soft" onclick="importGalleryPhotos()">📥 Fotos importieren</button>
       </div>
       <div class="plant-grid" id="plantGrid"></div>
+    </section>
+    <section id="view-ki" class="hidden">
+      <div class="section-title"><h2>KI-Diagnosen</h2>
+        <small><button class="btn" onclick="kiMarkAllRead()">Alle als gelesen</button></small></div>
+      <div id="kiContent"></div>
     </section>
     <section id="view-journal" class="hidden">
       <div class="section-title"><h2>Gartenjournal</h2><small>Neueste zuerst</small></div>
@@ -222,6 +232,13 @@ a{color:var(--leaf)}
     </section>
     <section id="view-data" class="hidden">
       <div class="settings">
+        <div class="panel">
+          <h3>🩺 KI-Diagnose beim Fotografieren</h3>
+          <p>Jedes Foto, das du in der App aufnimmst oder importierst, wird sofort beurteilt: Gesundheit, Beobachtung und Pflegehinweis landen direkt in der Pflanzenakte.</p>
+          <p>Der API-Schlüssel bleibt <strong>nur auf diesem Gerät</strong> und wird nie mit Google Drive synchronisiert. Jedes Gerät braucht ihn einmal. Tipp: einen eigenen Schlüssel mit Ausgabelimit anlegen.</p>
+          <button class="btn primary" id="kiKeyBtn" onclick="kiPromptKey()">Schlüssel hinterlegen</button>
+          <p class="meta" id="kiKeyInfo"></p>
+        </div>
         <div class="panel">
           <h3>🤖 Export für Claude (KI-Analyse)</h3>
           <p>Erstellt eine strukturierte Akte je Pflanze – Pflegeverlauf, Gesundheit und Fotos – die Claude über MCP auswerten kann.</p>
@@ -280,6 +297,7 @@ a{color:var(--leaf)}
 <div id="plantFile" class="pf hidden" role="dialog" aria-modal="true"></div>
 
 <script src="app.js"></script>
+<script src="ki-diagnose.js"></script>
 <script src="cloud-sync.js"></script>
 </body>
 </html>

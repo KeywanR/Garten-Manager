@@ -48,6 +48,13 @@ const basePlants=[
 let plants=basePlants.slice();
 
 /* ------------------------------------------------------ default health ------ */
+/* The four health values the app understands. Single source of truth: the
+   plant-file dropdown renders from this list and every incoming diagnosis is
+   validated against it, so a status that cannot round-trip through the UI can
+   never enter state. Also mirrored as an enum in the KI request schema. */
+const HEALTH_STATUSES=['🟢 Gesund','🟡 Beobachten','🟠 Behandlung läuft','🔴 Handlungsbedarf'];
+const isHealthStatus=s=>HEALTH_STATUSES.includes(s);
+
 const healthDefaults={
  'euonymus-alatus':{status:'🟠 Behandlung läuft',reason:'Fortschreitende Welke bzw. Triebsterben am erkrankten Strauch wird beobachtet'},
  felsenbirne:{status:'🟡 Beobachten',reason:'Gelbe Blätter beobachten'},
@@ -229,7 +236,7 @@ const diff=s=>Math.round((parse(s)-parse(today()))/86400000);
 const fmt=s=>s?new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}).format(parse(s)):'—';
 const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(parse(v).getTime());
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiQuestions:[],kiRead:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -242,6 +249,8 @@ function normalizeState(raw){
   out.photoMeta=(x.photoMeta&&typeof x.photoMeta==='object'&&!Array.isArray(x.photoMeta))?x.photoMeta:{};
   out.customPlants=Array.isArray(x.customPlants)?x.customPlants:[];
   out.customTasks=Array.isArray(x.customTasks)?x.customTasks:[];
+  out.kiQuestions=Array.isArray(x.kiQuestions)?x.kiQuestions:[];
+  out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
   out.dataVersion=DATA_VERSION;
@@ -275,6 +284,18 @@ function cleanupV12(force=false){
   state.meta.lastCleanup={date:new Date().toISOString(),dropped,archived};
   if(changed) save(false);
   return {changed,dropped,archived,skipped:false};
+}
+
+/* One-time on upgrade: every photo that already existed before the on-device
+   diagnosis shipped is marked 'legacy' so the catch-up pass ignores it. Without
+   this the first launch would diagnose the entire existing photo history at
+   once — a surprise API bill and a flood of findings nobody asked for. */
+function backfillKiFlags(){
+  state.meta=state.meta||{};
+  if(state.meta.kiBackfillDone)return;
+  Object.values(state.photoMeta||{}).forEach(m=>{if(m&&!m.diag)m.diag='legacy'});
+  state.meta.kiBackfillDone=true;
+  save(false);
 }
 
 function load(){
@@ -536,7 +557,15 @@ function applyKiDiagnosis(e){
   if(!plant(e.plantId))return changed;
   if(e.status||e.reason){
     const cur=healthFor(e.plantId);
-    state.health[e.plantId]={status:e.status||cur.status,reason:e.reason!==undefined?e.reason:cur.reason,updated:d};
+    // A status outside the app's own vocabulary cannot round-trip through the
+    // plant-file dropdown (it would silently be rewritten on the next save), so
+    // an unknown value is rejected and the current status kept.
+    let status=cur.status;
+    if(e.status){
+      if(isHealthStatus(e.status))status=e.status;
+      else console.warn('KI-Diagnose: unbekannter Gesundheitsstatus verworfen:',e.status);
+    }
+    state.health[e.plantId]={status,reason:e.reason!==undefined?e.reason:cur.reason,updated:d};
     changed=true;
   }
   if(e.observation){
@@ -597,17 +626,22 @@ async function removePhoto(key){const db=await photoDB();
     tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error)});db.close();delete photoCache[key]}
 
 /* Cover photo (one per plant, keyed by plant id) */
-function pickImage(useCamera){return new Promise(resolve=>{const i=document.createElement('input');
+/* multi=true returns every selected file. The OS picker runs outside the page
+   and hands back only what the user ticked — the app has no way to enumerate
+   the photo library, so nothing else is ever visible to it. */
+function pickImage(useCamera,multi=false){return new Promise(resolve=>{const i=document.createElement('input');
   i.type='file';i.accept='image/*';if(useCamera)i.setAttribute('capture','environment');
-  i.onchange=()=>resolve(i.files[0]||null);i.click()})}
+  if(multi)i.multiple=true;
+  i.onchange=()=>resolve(multi?Array.from(i.files||[]):(i.files[0]||null));i.click()})}
 async function quickPhoto(id){const f=await pickImage(true);if(f)await setCover(id,f)}
 async function setCover(id,file){
   if(!file||!file.type.startsWith('image/'))return;
   const data=await resizePhoto(file);await putPhoto(id,data);
-  state.photoMeta[id]={plantId:id,date:today(),caption:'Titelbild',cover:true};
+  state.photoMeta[id]={plantId:id,date:today(),caption:'Titelbild',cover:true,diag:'pending'};
   save();renderPlants();
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);
   toast('Titelbild gespeichert');
+  if(window.KiDiagnose)KiDiagnose.diagnosePhoto(id,id);
 }
 async function deleteCover(id){if(!confirm('Titelbild löschen?'))return;await removePhoto(id);delete state.photoMeta[id];save();renderPlants();
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);}
@@ -618,9 +652,33 @@ async function addTimelinePhoto(id,useCamera){
   const data=await resizePhoto(file),key=`timeline|${id}|${Date.now()}`;
   const caption=(prompt('Kurze Notiz zum Foto (optional):')||'').trim();
   await putPhoto(key,data);
-  state.photoMeta[key]={plantId:id,date:today(),caption,cover:false};
+  state.photoMeta[key]={plantId:id,date:today(),caption,cover:false,diag:'pending'};
   state.observations.unshift({id:`obs-${Date.now()}`,plantId:id,date:today(),type:'Foto',text:caption||'Neues Verlaufsfoto',photoKey:key});
   save();openPlantFile(id);toast('Verlaufsfoto gespeichert');
+  if(window.KiDiagnose)KiDiagnose.diagnosePhoto(key,id);
+}
+
+/* Bulk import from the phone's gallery: pick several photos at once, store them
+   as unassigned timeline photos and let the diagnosis work out which plant each
+   one belongs to. Each photo is diagnosed independently — one failure does not
+   abort the rest. */
+async function importGalleryPhotos(){
+  const files=await pickImage(false,true);
+  if(!files||!files.length)return;
+  const imgs=files.filter(f=>f&&f.type.startsWith('image/'));
+  if(!imgs.length)return;
+  const keys=[];
+  for(const f of imgs){
+    try{
+      const data=await resizePhoto(f),key=`inbox|${Date.now()}|${Math.random().toString(36).slice(2,7)}`;
+      await putPhoto(key,data);
+      state.photoMeta[key]={plantId:'',date:today(),caption:'Import',cover:false,diag:'pending'};
+      keys.push(key);
+    }catch(e){console.warn('Foto konnte nicht importiert werden',e)}
+  }
+  save();renderAll();
+  toast(`${keys.length} Foto${keys.length===1?'':'s'} importiert – Diagnose läuft`);
+  if(window.KiDiagnose)for(const k of keys)KiDiagnose.diagnosePhoto(k,'');
 }
 async function deleteTimelinePhoto(key,id){if(!confirm('Dieses Verlaufsfoto löschen?'))return;
   await removePhoto(key);delete state.photoMeta[key];
@@ -659,7 +717,7 @@ function updateHealthFromFile(id){
 function openPlantFile(id){
   const p=plant(id);if(!p)return;
   const h=healthFor(id),pf=profileFor(id);
-  const statuses=['🟢 Gesund','🟡 Beobachten','🟠 Behandlung läuft','🔴 Handlungsbedarf'];
+  const statuses=HEALTH_STATUSES;
   const ts=defs.filter(d=>d.plantId===id);
   const timeline=plantTimeline(id);
   const photos=Object.entries(state.photoMeta||{}).filter(([k,m])=>m.plantId===id&&!m.cover&&photoCache[k])
@@ -751,7 +809,8 @@ function renderSettings(){
 }
 function toggleSeasons(){state.showAllSeasons=!state.showAllSeasons;save();renderAll()}
 
-function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings()}
+function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings();
+  if(window.KiDiagnose)KiDiagnose.render()}
 
 function switchView(v){
   document.querySelectorAll('main>section').forEach(s=>s.classList.add('hidden'));
@@ -986,6 +1045,7 @@ async function startApp(){
   rebuildCatalog();
   await migrateOldPhotoDB();
   await loadPhotos();
+  backfillKiFlags();
   cleanupV12(false);
   initializeCareTasks();
   if(!state.migrated)migrateLegacy();
@@ -993,6 +1053,7 @@ async function startApp(){
   await runIntegrityCheck(false);
   await createLocalSnapshot('automatisch',false);
   if(window.CloudSync)CloudSync.init();
+  if(window.KiDiagnose)KiDiagnose.init();
   if('serviceWorker' in navigator){try{await navigator.serviceWorker.register('service-worker.js')}catch(e){console.warn('SW nicht registriert',e)}}
 }
 startApp();

@@ -1,0 +1,8 @@
+# Mozart-injected (symlinks to Mozart repo)
+.claude/
+CLAUDE.md
+loop.sh
+IMPLEMENTATION_PLAN.md
+PROMPT_plan.md
+PROMPT_build.md
+.ralph-worktrees/

@@ -10,9 +10,13 @@
    Requires the app URL to be registered as an Authorised redirect URI on the
    OAuth client. Scope: drive.file — the app only sees files it created.
 
-   Sync model: this device (iPad) is the source of truth. On change → debounced
-   upload. On startup → only PULL when this device is empty (fresh install or
-   Safari cleared its storage); otherwise PUSH. An emptier copy can never
+   Sync model: multi-device. On change → debounced upload, but never a blind
+   overwrite: before every push we compare Drive's modifiedTime against the last
+   copy this device saw, and merge anything newer in first (mergeStates). The
+   merge is per record, not per file — tasks by their completion date, health by
+   its updated date, observations / photos / plants / questions by their unique
+   ids. On startup a device with no local data adopts the cloud copy wholesale;
+   any other device merges and pushes the union. An emptier copy can never
    overwrite real data, in either direction.
 
    Alongside the data file, every push also regenerates and uploads the
@@ -33,7 +37,8 @@
 
    Depends on app.js globals: state, buildPayload, buildDossierPayload,
    gmPhotoFileName, applyKiDiagnosis, importKiPhoto, slugify, migrateState,
-   restorePhotos, cleanupV12, save, renderAll, toast, photoCache, loadPhotos.
+   normalizeState, restorePhotos, putPhoto, cleanupV12, save, renderAll, toast,
+   photoCache, loadPhotos. Optional: window.KiDiagnose (catch-up after a merge).
    ========================================================================== */
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
@@ -54,6 +59,7 @@
   const LS_PHOTO_INDEX = 'gm_drive_photo_index';
   const DIAG_FILE_NAME = 'gartenmanager-ki-diagnose.json';
   const LS_DIAG_APPLIED = 'gm_ki_diag_applied';
+  const LS_REMOTE_TIME = 'gm_drive_remote_time';   // modifiedTime of the last copy we saw
   const SS_TOKEN = 'gm_at', SS_TOKEN_EXP = 'gm_at_exp';
   const SS_STATE = 'gm_oauth_state', SS_RESUME = 'gm_oauth_resume';
   const UPLOAD_DEBOUNCE = 4000;
@@ -306,6 +312,129 @@
     try { return JSON.parse(await res.text()); } catch (e) { return null; }
   }
 
+  /* ------------------------------------------------- multi-device merge ----- */
+  // Drive's modifiedTime for the data file, or '' if there is no file yet.
+  async function remoteModified() {
+    if (!(await ensureFileRef())) return '';
+    try {
+      const res = await apiFetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?fields=modifiedTime');
+      return (await res.json()).modifiedTime || '';
+    } catch (e) { return ''; }
+  }
+  const lastRemoteTime = () => localStorage.getItem(LS_REMOTE_TIME) || '';
+  const setLastRemoteTime = t => { if (t) localStorage.setItem(LS_REMOTE_TIME, t); };
+
+  const laterOf = (a, b) => ((a || '') >= (b || '') ? a : b);
+
+  // Union two append-only text fields line by line, preserving local order and
+  // adding any line only the other side has. Profile texts grow by dated
+  // [KI …] lines, so a line-wise union never loses either device's additions.
+  function mergeText(a, b) {
+    if (!a) return b || ''; if (!b) return a;
+    if (a === b) return a;
+    const seen = new Set(a.split('\n'));
+    const extra = b.split('\n').filter(l => l.trim() && !seen.has(l));
+    return extra.length ? a + '\n' + extra.join('\n') : a;
+  }
+
+  function mergeById(localArr, remoteArr, key) {
+    const out = [], seen = new Set();
+    for (const x of [...(localArr || []), ...(remoteArr || [])]) {
+      if (!x) continue;
+      const k = typeof key === 'function' ? key(x) : x[key];
+      if (k === undefined || seen.has(k)) continue;
+      seen.add(k); out.push(x);
+    }
+    return out;
+  }
+
+  /* Field-level merge of a remote state into the local one. Replaces the old
+     whole-file overwrite, which made whichever device synced last win outright
+     and silently discard the other device's work. Every record type here is
+     either dated (take the newer) or uniquely keyed (union). */
+  function mergeStates(local, remote) {
+    const out = local;
+
+    // Tasks: whichever device completed the task more recently is right.
+    for (const [id, rt] of Object.entries(remote.tasks || {})) {
+      const lt = out.tasks[id];
+      if (!lt) { out.tasks[id] = rt; continue; }
+      if ((rt.last || '') > (lt.last || '')) out.tasks[id] = rt;
+    }
+    // Health: newest assessment wins.
+    for (const [id, rh] of Object.entries(remote.health || {})) {
+      const lh = out.health[id];
+      if (!lh || (rh.updated || '') > (lh.updated || '')) out.health[id] = rh;
+    }
+    // Profiles: append-only text, union per field.
+    for (const [id, rp] of Object.entries(remote.profiles || {})) {
+      const lp = out.profiles[id];
+      if (!lp) { out.profiles[id] = rp; continue; }
+      const m = { ...lp };
+      for (const f of Object.keys(rp)) m[f] = mergeText(lp[f], rp[f]);
+      out.profiles[id] = m;
+    }
+    // Uniquely-keyed collections: plain union.
+    out.observations = mergeById(out.observations, remote.observations, 'id')
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    out.customPlants = mergeById(out.customPlants, remote.customPlants, 'id');
+    out.customTasks = mergeById(out.customTasks, remote.customTasks, 'id');
+    out.kiQuestions = mergeById(out.kiQuestions, remote.kiQuestions, 'id');
+    // History has no ids — key on the fields that identify one logged action.
+    out.history = mergeById(out.history, remote.history,
+      h => `${h.date}|${h.taskId}|${h.plantId}|${h.title}`)
+      .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    // Read markers are additive: read on either device means read.
+    out.kiRead = { ...(remote.kiRead || {}), ...(out.kiRead || {}) };
+    // Photo metadata: union by key; a finished diagnosis beats a pending one.
+    for (const [k, rm] of Object.entries(remote.photoMeta || {})) {
+      const lm = out.photoMeta[k];
+      if (!lm) { out.photoMeta[k] = rm; continue; }
+      if (lm.diag !== 'done' && rm.diag === 'done') out.photoMeta[k] = rm;
+    }
+    out.meta = out.meta || {};
+    out.meta.lastCloudMerge = new Date().toISOString();
+    return out;
+  }
+
+  // Merge the remote copy (state + any photos we don't have) into local state.
+  async function mergeRemote(remote) {
+    applyingRemote = true;
+    try {
+      const rs = migrateState(remote.state || remote);
+      state = normalizeState(mergeStates(normalizeState(state), rs));
+      const photos = remote.photos || {};
+      for (const [k, data] of Object.entries(photos)) {
+        if (photoCache[k]) continue;
+        if (typeof data !== 'string' || !data.startsWith('data:image/')) continue;
+        try { await putPhoto(k, data); } catch (e) { console.warn('Foto-Merge übersprungen', k, e); }
+      }
+      cleanupV12(true);
+      save(false);
+      renderAll();
+    } finally { applyingRemote = false; }
+    // Photos that arrived from the other device may never have been diagnosed
+    // (that device had no key yet). Pick them up here — see catchUp().
+    if (window.KiDiagnose) { try { await KiDiagnose.catchUp(); } catch (e) {} }
+  }
+
+  // Pull-and-merge when Drive holds changes this device has not seen yet.
+  // Returns true if anything was merged.
+  async function mergeIfRemoteNewer() {
+    const rt = await remoteModified();
+    if (!rt) return false;
+    const seen = lastRemoteTime();
+    if (seen && rt <= seen) return false;
+    const remote = await downloadRemote();
+    if (!remote || !remoteHasData(remote)) { setLastRemoteTime(rt); return false; }
+    if (!seen) {
+      // First run on this device with a populated Drive: merge rather than
+      // assume either side is authoritative.
+      await mergeRemote(remote); setLastRemoteTime(rt); return true;
+    }
+    await mergeRemote(remote); setLastRemoteTime(rt); return true;
+  }
+
   /* --------------------------------------------------------- sync actions --- */
   function localIsEmpty() {
     const s = state || {};
@@ -327,8 +456,14 @@
   async function pushLocal() {
     await loadPhotos();
     if (localIsEmpty()) return;                          // never overwrite the cloud with an empty copy
+    // Never blind-overwrite. If the other device has pushed since we last
+    // looked, merge that work in first and upload the union — otherwise
+    // whichever device syncs last would silently discard the other's changes.
+    try { await mergeIfRemoteNewer(); }
+    catch (e) { console.warn('Zusammenführen vor dem Hochladen übersprungen:', e); }
     const payload = await buildPayload();
     await uploadContent(JSON.stringify(payload));
+    try { setLastRemoteTime(await remoteModified()); } catch (e) {}
     state.meta.lastCloudPush = Date.now();
     save(false);
     // Photo history first, so the dossier's driveFile names reflect what was
@@ -355,13 +490,18 @@
     } finally { applyingRemote = false; }
   }
 
-  // Single-editor reconciliation: pull only when this device has no real data.
+  // Multi-device reconciliation: a device with no local data adopts the cloud
+  // copy wholesale (fresh install); a device that already holds data merges the
+  // cloud copy in and pushes the union (pushLocal does the merge).
   async function reconcile() {
     await loadPhotos();
-    const remote = await downloadRemote();
     if (localIsEmpty()) {
-      if (remoteHasData(remote)) { await adoptRemote(remote); setStatus('Aus Cloud geladen', 'ok'); }
-      else { setStatus('Verbunden – noch keine Daten', 'ok'); }
+      const remote = await downloadRemote();
+      if (remoteHasData(remote)) {
+        await adoptRemote(remote);
+        try { setLastRemoteTime(await remoteModified()); } catch (e) {}
+        setStatus('Aus Cloud geladen', 'ok');
+      } else { setStatus('Verbunden – noch keine Daten', 'ok'); }
     } else {
       await pushLocal();
       setStatus('Gesichert', 'ok');
@@ -554,7 +694,9 @@
     }
   }
 
-  window.CloudSync = { init, onLocalChange, renderStatus };
+  // _mergeStates is exported for verification: the merge is the one place where
+  // a bug silently destroys data, so it must be testable without a live Drive.
+  window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates };
   window.cloudConnect = connect;
   window.cloudDisconnect = () => (enabled() ? disconnect() : connect());
   window.cloudSyncNow = syncNow;
