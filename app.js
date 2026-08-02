@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v36';
+const APP_BUILD='v37';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -343,6 +343,33 @@ function migrateTimestamps(){
    The cause is fixed, but the tombstones it already wrote would keep deleting
    tasks forever. Drop them once; genuine task deletions are rare and re-doing
    one by hand is far cheaper than losing care history on every sync. */
+/* One-off repair for findings that were duplicated under different random ids
+   before the id became deterministic. Collapse each set of identical
+   KI-Diagnose entries to one, preferring a copy that is already marked read so
+   the marker is not orphaned, and carry the read state onto the survivor. */
+function dedupeKiFindings(){
+  state.meta=state.meta||{};
+  if(state.meta.kiDedupe)return;
+  const groups={};
+  (state.observations||[]).filter(o=>o&&o.type==='KI-Diagnose').forEach(o=>{
+    const k=`${o.plantId}|${o.date}|${o.text}`;(groups[k]=groups[k]||[]).push(o)});
+  const read=state.kiRead||{},drop=new Set();
+  Object.values(groups).forEach(list=>{
+    if(list.length<2)return;
+    const keep=list.find(o=>read[o.id])||list[0];
+    const wasRead=list.some(o=>read[o.id]);
+    list.forEach(o=>{if(o.id!==keep.id){drop.add(o.id);delete read[o.id]}});
+    if(wasRead)read[keep.id]=read[keep.id]||nowTs();
+  });
+  if(drop.size){
+    state.observations=state.observations.filter(o=>!drop.has(o.id));
+    // These are duplicates, not deletions — no tombstones, or the survivor
+    // would be deleted on the other device too.
+    state.kiRead=read;resetTsBaseline();
+  }
+  state.meta.kiDedupe=1;save(false);
+}
+
 function purgeBadTaskTombstones(){
   state.meta=state.meta||{};
   if(state.meta.taskTombstonePurge)return;
@@ -352,7 +379,7 @@ function purgeBadTaskTombstones(){
   save(false);
 }
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiProposals:[],suppressedTasks:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiApplied:{},kiProposals:[],suppressedTasks:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -366,6 +393,7 @@ function normalizeState(raw){
   out.customPlants=Array.isArray(x.customPlants)?x.customPlants:[];
   out.customTasks=Array.isArray(x.customTasks)?x.customTasks:[];
   out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
+  out.kiApplied=(x.kiApplied&&typeof x.kiApplied==='object'&&!Array.isArray(x.kiApplied))?x.kiApplied:{};
   out.kiProposals=Array.isArray(x.kiProposals)?x.kiProposals:[];
   out.suppressedTasks=(x.suppressedTasks&&typeof x.suppressedTasks==='object'&&!Array.isArray(x.suppressedTasks))?x.suppressedTasks:{};
   out.tombstones=(x.tombstones&&typeof x.tombstones==='object'&&!Array.isArray(x.tombstones))?x.tombstones:{};
@@ -714,7 +742,14 @@ function applyKiDiagnosis(e){
     changed=true;
   }
   if(e.observation){
-    state.observations.unshift({id:`obs-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,plantId:e.plantId,date:d,type:'KI-Diagnose',text:e.observation});
+    /* The observation id is DERIVED from the diagnosis entry id, never random.
+       Two devices applying the same inbox entry must produce the same
+       observation, or each ends up with its own copy under a different id — and
+       a read marker set on one device then points at an id the other has never
+       heard of, so the finding reads as unread there forever. */
+    const oid=`obs-ki-${String(e.id||`${e.plantId}-${d}`).replace(/[^a-zA-Z0-9_-]+/g,'-')}`;
+    if(state.observations.some(o=>o.id===oid))return changed;
+    state.observations.unshift({id:oid,plantId:e.plantId,date:d,type:'KI-Diagnose',text:e.observation});
     changed=true;
   }
   if(e.profile&&typeof e.profile==='object'){
@@ -1391,6 +1426,7 @@ async function startApp(){
   await loadPhotos();
   migrateTimestamps();
   purgeBadTaskTombstones();
+  dedupeKiFindings();
   cleanupV12(false);
   initializeCareTasks();
   if(!state.migrated)migrateLegacy();
