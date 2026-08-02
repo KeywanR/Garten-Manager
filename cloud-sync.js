@@ -605,8 +605,21 @@
       ? ' · zuletzt ' + new Date(state.meta.lastCloudPush).toLocaleString('de-AT') : '';
     const icon = statusKind === 'ok' ? '✅' : statusKind === 'busy' ? '⏳'
       : statusKind === 'warn' ? '⚠️' : statusKind === 'error' ? '⛔' : '☁️';
-    info.textContent = icon + ' ' + statusText + (enabled() ? last : '');
-    if (btn) btn.textContent = enabled() ? 'Google Drive trennen' : 'Mit Google Drive verbinden';
+    // Three states, not two. Sync being switched ON and the Google session being
+    // VALID are different things, and conflating them produced a button reading
+    // "trennen" directly above text asking you to connect — where tapping it
+    // silently switched sync off, the opposite of what the text said.
+    const needsAuth = enabled() && !tokenValid();
+    info.textContent = needsAuth
+      ? '🔑 Nicht bei Google angemeldet – Daten werden gerade nicht synchronisiert'
+      : icon + ' ' + statusText + (enabled() ? last : '');
+    if (btn) {
+      btn.textContent = !enabled() ? 'Mit Google Drive verbinden'
+        : needsAuth ? 'Bei Google anmelden'
+        : '✅ Verbunden';
+      btn.disabled = enabled() && !needsAuth;
+      btn.style.opacity = btn.disabled ? '.65' : '';
+    }
     if (actions) actions.style.display = enabled() ? '' : 'none';
   }
 
@@ -719,7 +732,13 @@
   // a bug silently destroys data, so it must be testable without a live Drive.
   window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates };
   window.cloudConnect = connect;
-  window.cloudDisconnect = () => (enabled() ? disconnect() : connect());
+  // The primary button now only ever connects or re-authenticates; disconnecting
+  // moved to its own button among the sync actions, so it cannot be hit by
+  // someone following an instruction to sign in.
+  window.cloudDisconnect = () => (enabled() && tokenValid() ? undefined : connect());
+  window.cloudForceDisconnect = () => {
+    if (confirm('Google Drive trennen? Die Daten auf diesem Gerät bleiben erhalten, werden aber nicht mehr synchronisiert.')) disconnect();
+  };
   window.cloudSyncNow = syncNow;
   window.cloudPullNow = pullNow;
 })();
