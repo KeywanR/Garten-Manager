@@ -1,3 +1,13 @@
+# App data downloaded from Google Drive. The garden data lives in Drive (and on
+# the devices), never in git: the backup file alone is ~44 MB and the photo
+# archive keeps growing, so committing any of it would bloat the repo
+# permanently for no benefit.
+gartenmanager-data*.json
+gartenmanager-ki-akte*.json
+gartenmanager-ki-diagnose*.json
+gartenmanager-sicherung-*.json
+photos/
+
 # Mozart-injected (symlinks to Mozart repo)
 .claude/
 CLAUDE.md
