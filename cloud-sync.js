@@ -438,7 +438,17 @@
         if (typeof data !== 'string' || !data.startsWith('data:image/')) continue;
         try { await putPhoto(k, data); } catch (e) { console.warn('Foto-Merge übersprungen', k, e); }
       }
-      cleanupV12(true);
+      // rebuildCatalog FIRST. cleanupV12 deletes every task whose id is not in
+      // `defs`, and `defs` is only rebuilt inside renderAll — so running the
+      // cleanup here used to compare incoming data against the OLD catalogue and
+      // silently delete the task state of every custom plant it had not seen
+      // yet. With tombstones recording deletions, that damage then propagated
+      // back to the other device: pulling the good copy destroyed task history
+      // and exported the destruction. Not forced either — the incoming state
+      // carries its own cleanup marker and does not need redoing on every sync.
+      rebuildCatalog();
+      cleanupV12(false);
+      resetTsBaseline();
       save(false);
       renderAll();
     } finally { applyingRemote = false; }
@@ -509,7 +519,13 @@
       const st = remote.state || remote;
       state = migrateState(st);
       await restorePhotos(remote.photos || {});
-      cleanupV12(true);
+      // Same ordering trap as in mergeRemote, and this is the path behind
+      // "Aus Cloud laden": the catalogue must be rebuilt from the data we just
+      // adopted before cleanupV12 judges which task ids are valid, or it
+      // deletes the task history of every custom plant in the incoming copy.
+      rebuildCatalog();
+      cleanupV12(false);
+      resetTsBaseline();
       state.meta.lastCloudPull = Date.now();
       save(false);
       renderAll();
