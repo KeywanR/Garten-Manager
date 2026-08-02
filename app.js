@@ -236,7 +236,7 @@ const diff=s=>Math.round((parse(s)-parse(today()))/86400000);
 const fmt=s=>s?new Intl.DateTimeFormat('de-AT',{day:'2-digit',month:'2-digit',year:'numeric'}).format(parse(s)):'—';
 const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(parse(v).getTime());
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiQuestions:[],kiRead:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -249,7 +249,6 @@ function normalizeState(raw){
   out.photoMeta=(x.photoMeta&&typeof x.photoMeta==='object'&&!Array.isArray(x.photoMeta))?x.photoMeta:{};
   out.customPlants=Array.isArray(x.customPlants)?x.customPlants:[];
   out.customTasks=Array.isArray(x.customTasks)?x.customTasks:[];
-  out.kiQuestions=Array.isArray(x.kiQuestions)?x.kiQuestions:[];
   out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
@@ -284,18 +283,6 @@ function cleanupV12(force=false){
   state.meta.lastCleanup={date:new Date().toISOString(),dropped,archived};
   if(changed) save(false);
   return {changed,dropped,archived,skipped:false};
-}
-
-/* One-time on upgrade: every photo that already existed before the on-device
-   diagnosis shipped is marked 'legacy' so the catch-up pass ignores it. Without
-   this the first launch would diagnose the entire existing photo history at
-   once — a surprise API bill and a flood of findings nobody asked for. */
-function backfillKiFlags(){
-  state.meta=state.meta||{};
-  if(state.meta.kiBackfillDone)return;
-  Object.values(state.photoMeta||{}).forEach(m=>{if(m&&!m.diag)m.diag='legacy'});
-  state.meta.kiBackfillDone=true;
-  save(false);
 }
 
 function load(){
@@ -637,11 +624,10 @@ async function quickPhoto(id){const f=await pickImage(true);if(f)await setCover(
 async function setCover(id,file){
   if(!file||!file.type.startsWith('image/'))return;
   const data=await resizePhoto(file);await putPhoto(id,data);
-  state.photoMeta[id]={plantId:id,date:today(),caption:'Titelbild',cover:true,diag:'pending'};
+  state.photoMeta[id]={plantId:id,date:today(),caption:'Titelbild',cover:true};
   save();renderPlants();
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);
   toast('Titelbild gespeichert');
-  if(window.KiDiagnose)KiDiagnose.diagnosePhoto(id,id);
 }
 async function deleteCover(id){if(!confirm('Titelbild löschen?'))return;await removePhoto(id);delete state.photoMeta[id];save();renderPlants();
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);}
@@ -652,33 +638,31 @@ async function addTimelinePhoto(id,useCamera){
   const data=await resizePhoto(file),key=`timeline|${id}|${Date.now()}`;
   const caption=(prompt('Kurze Notiz zum Foto (optional):')||'').trim();
   await putPhoto(key,data);
-  state.photoMeta[key]={plantId:id,date:today(),caption,cover:false,diag:'pending'};
+  state.photoMeta[key]={plantId:id,date:today(),caption,cover:false};
   state.observations.unshift({id:`obs-${Date.now()}`,plantId:id,date:today(),type:'Foto',text:caption||'Neues Verlaufsfoto',photoKey:key});
   save();openPlantFile(id);toast('Verlaufsfoto gespeichert');
-  if(window.KiDiagnose)KiDiagnose.diagnosePhoto(key,id);
 }
 
-/* Bulk import from the phone's gallery: pick several photos at once, store them
-   as unassigned timeline photos and let the diagnosis work out which plant each
-   one belongs to. Each photo is diagnosed independently — one failure does not
-   abort the rest. */
+/* Bulk import from the phone's gallery: pick several photos at once and store
+   them without a plant. They appear under „KI-Diagnosen“ → „Fotos ohne Pflanze“
+   until assigned; only an assigned photo reaches the plant file and the KI-Akte
+   that Claude evaluates. */
 async function importGalleryPhotos(){
   const files=await pickImage(false,true);
   if(!files||!files.length)return;
   const imgs=files.filter(f=>f&&f.type.startsWith('image/'));
   if(!imgs.length)return;
-  const keys=[];
+  let n=0;
   for(const f of imgs){
     try{
       const data=await resizePhoto(f),key=`inbox|${Date.now()}|${Math.random().toString(36).slice(2,7)}`;
       await putPhoto(key,data);
-      state.photoMeta[key]={plantId:'',date:today(),caption:'Import',cover:false,diag:'pending'};
-      keys.push(key);
+      state.photoMeta[key]={plantId:'',date:today(),caption:'Import',cover:false};
+      n++;
     }catch(e){console.warn('Foto konnte nicht importiert werden',e)}
   }
   save();renderAll();
-  toast(`${keys.length} Foto${keys.length===1?'':'s'} importiert – Diagnose läuft`);
-  if(window.KiDiagnose)for(const k of keys)KiDiagnose.diagnosePhoto(k,'');
+  toast(`${n} Foto${n===1?'':'s'} importiert – jetzt Pflanzen zuordnen`);
 }
 async function deleteTimelinePhoto(key,id){if(!confirm('Dieses Verlaufsfoto löschen?'))return;
   await removePhoto(key);delete state.photoMeta[key];
@@ -1045,7 +1029,6 @@ async function startApp(){
   rebuildCatalog();
   await migrateOldPhotoDB();
   await loadPhotos();
-  backfillKiFlags();
   cleanupV12(false);
   initializeCareTasks();
   if(!state.migrated)migrateLegacy();

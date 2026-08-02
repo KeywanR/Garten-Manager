@@ -1,26 +1,17 @@
 # KI-Diagnose
 
-Es gibt zwei Wege, wie eine Diagnose in die App kommt. Beide enden im selben
-geprüften Merge-Pfad (`applyKiDiagnosis` in `app.js`).
+Wie Claude Diagnosen in die App zurückschreibt. Die App selbst ruft **keine
+API** auf und braucht **keinen Schlüssel** — es entstehen also keine Kosten
+neben dem bestehenden Claude-Abo. Fotos werden in der App aufgenommen oder
+importiert, syncen nach Drive, und Claude trägt die Auswertung über die Inbox
+ein.
 
-## Weg 1 (Standard): direkt auf dem Gerät
+Ergebnisse sammelt der Reiter **KI-Diagnosen** in der App (mit Zähler für
+Ungelesenes), damit sie nicht unbemerkt in den einzelnen Pflanzenakten
+verschwinden — siehe `ki-diagnose.js`. Dort werden auch importierte Fotos
+zugeordnet: ohne Pflanze taucht ein Foto in keiner Akte auf.
 
-Seit v24 ruft die App die Claude-API selbst auf, sobald ein Foto entsteht —
-siehe `ki-diagnose.js`. Foto aufnehmen oder importieren, Diagnose in Sekunden,
-kein Laptop und kein Zeitplan nötig. Der API-Schlüssel liegt nur in
-`localStorage` des jeweiligen Geräts (Reiter „Daten & KI“) und wird **nie** mit
-Drive synchronisiert; jedes Gerät braucht ihn einmal. Ohne Schlüssel wird das
-Foto normal gespeichert und später nachdiagnostiziert (`catchUp`).
-
-Das Antwortschema (`output_config.format`) spiegelt `HEALTH_STATUSES` als
-`enum`, deshalb kann über diesen Weg kein unbekannter Status entstehen.
-
-## Weg 2: Inbox über Google Drive
-
-Der ursprüngliche Weg, weiterhin gültig — z. B. wenn Claude am PC eine
-Sammelauswertung schreibt.
-
-## Ablauf (Weg 2)
+## Ablauf
 
 1. Claude analysiert KI-Akte + Fotos aus Drive.
 2. Claude erstellt/ergänzt per claude.ai-Drive-Connector die Datei

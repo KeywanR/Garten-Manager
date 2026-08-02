@@ -1,9 +1,24 @@
 # KI-Diagnose on device — photo to diagnosis in seconds
 
-**Status:** Active
+**Status:** Partly superseded — see "Reversal" below
 **Date:** 2026-08-02
 **Type:** new-feature
-**Scope:** The app calls the Claude API directly from the phone when a photo is added, so a diagnosis lands in the plant file within seconds — no laptop, no scheduled job, no backend.
+**Scope:** Originally: the app calls the Claude API directly when a photo is added. **Shipped: without the API call.** The supporting work — multi-device merge, health-status fix, KI-Diagnosen view, gallery import — shipped and stands.
+
+## Reversal (2026-08-02, same day)
+
+The on-device API path was built, tested and merged (PR #11), then **removed** before it was ever used, because Claude API usage is billed separately from a Claude subscription and the user does not want a second bill. There is no way to reach `api.anthropic.com` on subscription credentials, so "instant diagnosis in the app" and "no additional payment" are mutually exclusive — the constraint kills the feature, not the implementation.
+
+Removed: the API client, key storage and its settings panel, the request schema, the retry queue and the catch-up pass.
+
+Kept, because none of it depends on the API and all of it was worth doing:
+
+- **The multi-device merge** (below) — the most valuable part of the change. Without it, using two devices silently destroys data.
+- **The health-status vocabulary fix** — a real latent bug.
+- **The KI-Diagnosen view** — works unchanged for diagnoses arriving through the Drive inbox, which is the point: they used to scatter across plant files unread.
+- **Gallery multi-import**, now with manual plant assignment in that view instead of AI assignment.
+
+Diagnoses continue to come from the Drive inbox, written by Claude in a normal session under the existing subscription. The sections below describing the API call, the key, the schema and the catch-up are retained as a record of what was tried and why it was dropped — they do not describe the shipped app.
 
 ---
 
