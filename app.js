@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v46';
+const APP_BUILD='v47';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -694,6 +694,57 @@ function addObservation(id,type,text){
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);
   toast('Eintrag gespeichert');
 }
+/* Harvest.
+
+   "Ernte" already existed as one option in the observation dropdown, but as free
+   text — so a season's picking was a pile of sentences nobody could add up. The
+   point of recording a harvest is the total and the trend across years, which
+   needs a number and a unit.
+
+   The amount is parsed leniently and kept as text as well: "450 g", "1,2 kg" and
+   "3 Stück" all work, and anything unparseable is still recorded rather than
+   refused. A garden log that rejects "eine Handvoll" is worse than one that
+   cannot add it up. */
+function parseHarvestAmount(txt){
+  const m=String(txt||'').trim().match(/^([0-9]+(?:[.,][0-9]+)?)\s*(.*)$/);
+  if(!m)return null;
+  const amount=parseFloat(m[1].replace(',','.'));
+  if(!isFinite(amount)||amount<=0)return null;
+  return {amount,unit:(m[2]||'Stück').trim()||'Stück'};
+}
+/* Totals per unit for one season. Units are grouped as entered rather than
+   converted — guessing that "g" and "kg" should be combined is how a 450 g
+   harvest turns into 450 kg in someone's records. */
+function harvestSummary(id,year){
+  const y=String(year||new Date().getFullYear());
+  const hs=(state.observations||[]).filter(o=>o&&o.plantId===id&&o.type==='Ernte'&&String(o.date||'').slice(0,4)===y);
+  const totals={};
+  hs.forEach(o=>{if(typeof o.amount==='number'&&o.unit)totals[o.unit]=(totals[o.unit]||0)+o.amount});
+  return {year:y,count:hs.length,totals};
+}
+function harvestSummaryText(id,year){
+  const s=harvestSummary(id,year);
+  if(!s.count)return '';
+  const parts=Object.entries(s.totals)
+    .map(([u,v])=>`${(Math.round(v*100)/100).toString().replace('.',',')} ${u}`);
+  return `Ernte ${s.year}: ${parts.length?parts.join(' · '):`${s.count} Einträge`}`
+    + (parts.length?` (${s.count} Einträg${s.count===1?'':'e'})`:'');
+}
+function addHarvest(id){
+  const p=plant(id);if(!p)return;
+  const raw=(prompt(`Ernte bei „${p.name}" — wie viel?\n(z. B. 450 g, 1,2 kg, 3 Stück)`)||'').trim();
+  if(!raw)return;
+  const parsed=parseHarvestAmount(raw);
+  const note=(prompt('Notiz zur Ernte (optional) — Sorte, Qualität, Verwendung:')||'').trim();
+  const o={id:`obs-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,plantId:id,date:today(),
+    type:'Ernte',text:note?`${raw} – ${note}`:raw};
+  if(parsed){o.amount=parsed.amount;o.unit=parsed.unit}
+  state.observations.unshift(o);
+  state.history.unshift({date:today(),taskId:'harvest',plantId:id,title:`Ernte: ${raw}`,note});
+  save();renderAll();
+  if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);
+  toast(`Ernte eingetragen: ${raw}`);
+}
 function addObservationFromForm(id){
   const type=document.getElementById('obs-type').value,text=document.getElementById('obs-text').value.trim();
   if(text)addObservation(id,type,text);
@@ -1227,9 +1278,11 @@ function openPlantFile(id){
         <div class="field"><label>Eintrag</label><input id="obs-text" placeholder="Was wurde beobachtet oder gemacht?"></div>
         <div class="capture-row">
           <button class="btn primary" onclick="addObservationFromForm('${id}')">Eintragen</button>
+          <button class="btn soft" onclick="addHarvest('${id}')">🧺 Ernte</button>
           <button class="btn soft" onclick="addTimelinePhoto('${id}',true)">📷 Foto aufnehmen</button>
           <button class="btn" onclick="addTimelinePhoto('${id}',false)">Foto aus Galerie</button>
         </div>
+        ${harvestSummaryText(id)?`<div class="note" style="margin-top:10px">🧺 ${esc(harvestSummaryText(id))}</div>`:''}
       </section>
 
       <section class="fp full"><h3>📅 Pflegeplan</h3>
@@ -1536,6 +1589,16 @@ function buildPlantDossier(id){
     userEdited:edited?{at:edited.at,what:edited.what||''}:null,
     lastKiReview:reviewed&&reviewed.at?reviewed.at:null,
     needsReassessment,
+    /* Harvest totals per season. The timeline already carries each picking, but
+       a run reading twenty entries cannot see the shape; a per-year total can be
+       compared against last year's and turned into a real observation ("halb so
+       viel wie 2025 bei gleicher Pflege"). Only years with entries appear. */
+    harvests:(function(){
+      const years=[...new Set((state.observations||[])
+        .filter(o=>o&&o.plantId===id&&o.type==='Ernte'&&/^\d{4}/.test(String(o.date||'')))
+        .map(o=>String(o.date).slice(0,4)))].sort();
+      return years.map(y=>harvestSummary(id,y));
+    })(),
     currentHealth:healthFor(id),
     profile:profileFor(id),
     careSchedule:care,
