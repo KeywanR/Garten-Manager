@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v43';
+const APP_BUILD='v44';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -269,7 +269,7 @@ const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Numbe
    removals and writes tombstones, so a deletion on one device is no longer
    undone by the other device's surviving copy. */
 const nowTs=()=>new Date().toISOString();
-const TS_MAPS=['tasks','health','profiles','photoMeta','suppressedTasks'];
+const TS_MAPS=['tasks','health','profiles','photoMeta','suppressedTasks','plantEdits','kiReviewed'];
 const TS_LISTS=['customPlants','customTasks','kiProposals','observations'];
 let tsSnapshot=null;
 
@@ -377,7 +377,7 @@ function purgeBadTaskTombstones(){
   save(false);
 }
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiApplied:{},kiProposals:[],suppressedTasks:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiApplied:{},kiProposals:[],suppressedTasks:{},plantEdits:{},kiReviewed:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -394,6 +394,8 @@ function normalizeState(raw){
   out.kiApplied=(x.kiApplied&&typeof x.kiApplied==='object'&&!Array.isArray(x.kiApplied))?x.kiApplied:{};
   out.kiProposals=Array.isArray(x.kiProposals)?x.kiProposals:[];
   out.suppressedTasks=(x.suppressedTasks&&typeof x.suppressedTasks==='object'&&!Array.isArray(x.suppressedTasks))?x.suppressedTasks:{};
+  out.plantEdits=(x.plantEdits&&typeof x.plantEdits==='object'&&!Array.isArray(x.plantEdits))?x.plantEdits:{};
+  out.kiReviewed=(x.kiReviewed&&typeof x.kiReviewed==='object'&&!Array.isArray(x.kiReviewed))?x.kiReviewed:{};
   out.tombstones=(x.tombstones&&typeof x.tombstones==='object'&&!Array.isArray(x.tombstones))?x.tombstones:{};
   out.meta=(x.meta&&typeof x.meta==='object')?x.meta:{};
   out.showAllSeasons=Boolean(x.showAllSeasons); out.migrated=Boolean(x.migrated);
@@ -648,7 +650,25 @@ function saveProfile(id){
   p.updated=today();
   state.profiles[id]=p;
   state.history.unshift({date:today(),taskId:'profile',plantId:id,title:'Pflanzenakte aktualisiert'});
+  markPlantEdited(id,'Pflanzenakte bearbeitet');
   save();renderPlants();openPlantFile(id);toast('Pflanzenakte gespeichert');
+}
+
+/* Record that YOU changed something about a plant — its name, category, note,
+   care profile or health status. The daily diagnosis run compares this against
+   when it last looked at the plant, and re-checks the care plan for anything
+   you have corrected since. Correcting "unknown red grass" to a real species
+   usually invalidates the care schedule that was guessed from the wrong name,
+   and until now nothing re-examined it: the run only ever reacted to new
+   photos, so a correction changed the label and left the watering, feeding and
+   pruning tasks derived from the wrong plant in place.
+
+   Only user actions call this. KI-applied changes must NOT, or the run would
+   see its own edits as fresh corrections and re-review the same plant forever. */
+function markPlantEdited(id,what){
+  if(!id||!plant(id))return;
+  state.plantEdits=state.plantEdits||{};
+  state.plantEdits[id]={at:new Date().toISOString(),what:what||'geändert'};
 }
 
 /* --------------------------------------------------------- observations ----- */
@@ -682,7 +702,7 @@ function plantTimeline(id){
    single writer of the data file; the AI only files suggestions through this
    inbox. Profile texts are appended with a dated [KI …] tag, never overwritten.
    Returns true if anything changed. */
-function applyKiDiagnosis(e){
+async function applyKiDiagnosis(e){
   if(!e)return false;
   const d=isDateString(e.date)?e.date:today();
   let changed=false;
@@ -699,6 +719,12 @@ function applyKiDiagnosis(e){
       if(ap.needsReview!==false)addProposal({id:`${e.id||'ki'}-newplant`,plantId:id,type:'newPlant',
         title:`Neue Pflanze erkannt: ${ap.name}`,
         detail:ap.note||'Bitte Name, Kategorie und Notiz prüfen und bestätigen.',date:d});
+      /* Rebuild NOW, not at the end. Everything below — assignPhoto, the health
+         status, the profile — first asks plant(id) whether the plant exists, and
+         until the catalogue is rebuilt it does not. The photo a plant was
+         identified FROM was therefore silently dropped, leaving exactly the
+         plant you most want to look at showing "Kein Foto". */
+      rebuildCatalog();
       changed=true;
     }
     e={...e,plantId:e.plantId||id};
@@ -743,10 +769,16 @@ function applyKiDiagnosis(e){
   // plant (imported via "Fotos importieren"). The inbox could previously only
   // create plants or deliver new images — never re-home an orphan.
   if(e.assignPhoto&&e.assignPhoto.file&&e.plantId){
-    if(assignDrivePhotoToPlant(e.assignPhoto.file,e.plantId,e.assignPhoto.caption||'',d))changed=true;
+    if(await assignDrivePhotoToPlant(e.assignPhoto.file,e.plantId,e.assignPhoto.caption||'',d))changed=true;
   }
   if(changed){rebuildCatalog();initializeCareTasks()}
   if(!plant(e.plantId))return changed;
+  /* The run has now looked at this plant. Stamped for EVERY applied entry, even
+     one that concluded nothing needs changing — otherwise a plant you corrected
+     stays flagged as needing re-assessment and is re-examined every morning
+     forever, at a cost, to reach the same answer. */
+  state.kiReviewed=state.kiReviewed||{};
+  state.kiReviewed[e.plantId]={at:new Date().toISOString()};
   if(e.status||e.reason){
     const cur=healthFor(e.plantId);
     // A status outside the app's own vocabulary cannot round-trip through the
@@ -803,7 +835,7 @@ function addProposal(p){
 }
 const pendingProposals=()=>(state.kiProposals||[]).filter(p=>p.status==='pending');
 
-function confirmProposal(id){
+async function confirmProposal(id){
   const p=(state.kiProposals||[]).find(x=>x.id===id);
   if(!p||p.status!=='pending')return;
   if((p.type==='plan'||p.type==='tasks')&&p.payload){
@@ -824,7 +856,7 @@ function confirmProposal(id){
         state.tasks[t.id]={last,next:add(last||today(),Number(t.interval)||cur.interval)}}
     });
     if(Array.isArray(pl.addTasks)&&pl.addTasks.length)
-      applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:pl.addTasks});
+      await applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:pl.addTasks});
   }
   if(p.type==='newPlant'){
     const cp=(state.customPlants||[]).find(x=>x.id===p.plantId);
@@ -877,7 +909,24 @@ function photoKeyForDriveFile(name){
   }
   return '';
 }
-function assignDrivePhotoToPlant(file,plantId,caption,date){
+/* Give a plant a title image from a photo it already holds, if it has none.
+   A plant created from a photo would otherwise show "📷 Kein Foto" in the grid
+   while the very picture it was identified from sat in its Verlauf — the one
+   plant you most want to look at is the one you cannot see. The image is copied
+   under the plant's own key because that is how covers are stored; the original
+   stays in the Verlauf, so the photo is both title image and first history
+   entry. Does nothing if a title image already exists — replacing one is a
+   deliberate act, not a side effect of filing a photo. */
+async function ensureCoverFromPhoto(plantId,key,date){
+  if(!plant(plantId)||photoCache[plantId])return false;
+  const data=photoCache[key];
+  if(typeof data!=='string'||!data.startsWith('data:image/'))return false;
+  await putPhoto(plantId,data);
+  state.photoMeta[plantId]={plantId,date:isDateString(date)?date:today(),caption:'Titelbild',cover:true};
+  return true;
+}
+
+async function assignDrivePhotoToPlant(file,plantId,caption,date){
   if(!plant(plantId))return false;
   const key=photoKeyForDriveFile(file);
   if(!key)return false;
@@ -888,6 +937,7 @@ function assignDrivePhotoToPlant(file,plantId,caption,date){
   state.observations.unshift({id:`obs-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
     plantId,date:isDateString(date)?date:today(),type:'Foto',
     text:caption||'Zugeordnetes Foto',photoKey:key});
+  try{await ensureCoverFromPhoto(plantId,key,date)}catch(e){console.warn('Titelbild konnte nicht gesetzt werden',e)}
   return true;
 }
 
@@ -992,10 +1042,11 @@ async function deleteTimelinePhoto(key,id){if(!confirm('Dieses Verlaufsfoto lös
 async function importKiPhoto(plantId,dataUrl,caption,asCover,date){
   if(!plant(plantId)||typeof dataUrl!=='string'||!dataUrl.startsWith('data:image/'))return '';
   const d=isDateString(date)?date:today();
+  // A first image becomes the title picture AND the first Verlauf entry — it is
+  // both "what this plant looks like" and "what it looked like on this date".
   if(asCover&&!photoCache[plantId]){
     await putPhoto(plantId,dataUrl);
     state.photoMeta[plantId]={plantId,date:d,caption:caption||'Titelbild',cover:true};
-    return plantId;
   }
   const key=`timeline|${plantId}|${Date.now()}`;
   await putPhoto(key,dataUrl);
@@ -1012,6 +1063,7 @@ function updateHealthFromFile(id){
   state.health[id]={status,reason,updated:today()};
   state.observations.unshift({id:`obs-${Date.now()}`,plantId:id,date:today(),type:'Gesundheit',text:`${old.status} → ${status}${reason?`: ${reason}`:''}`});
   state.history.unshift({date:today(),taskId:'health',plantId:id,title:`Gesundheitsstatus: ${status}`,note:reason});
+  markPlantEdited(id,`Status selbst auf ${status} gesetzt`);
   save();renderPlants();openPlantFile(id);toast('Gesundheitsstatus gespeichert');
 }
 
@@ -1124,6 +1176,7 @@ function savePlantIdentity(id){
     if(p.type==='newPlant'&&p.plantId===id&&p.status==='pending'){p.status='confirmed';p.decidedAt=today()}});
   state.history.unshift({date:today(),taskId:'plant',plantId:id,
     title:renamed?`Pflanze umbenannt: ${name}`:'Pflanzendaten aktualisiert'});
+  markPlantEdited(id,renamed?`umbenannt in „${name}" (${cat})`:`Stammdaten geändert (${cat})`);
   rebuildCatalog();save();renderAll();openPlantFile(id);toast('Pflanze gespeichert');
 }
 
@@ -1358,8 +1411,22 @@ function buildPlantDossier(id){
     .map(([k,m])=>({key:k,date:m.date,caption:m.caption||'',isCover:!!m.cover,
       driveFile:gmDrivePhotoName(k,photoCache[k])}))
     .sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  // What YOU changed about this plant, and when the run last looked at it. If
+  // your correction is newer, the care plan was derived from something now known
+  // to be wrong and has to be re-checked — a schedule guessed for "unknown red
+  // grass" does not survive that turning out to be Japanese blood grass.
+  const edited=(state.plantEdits||{})[id]||null;
+  const reviewed=(state.kiReviewed||{})[id]||null;
+  // >= not >: when an edit and a review carry the same timestamp their order is
+  // genuinely unknown, and the two outcomes are not equally bad. Re-checking
+  // costs one extra look; skipping means a correction you made is silently never
+  // acted on. The next review stamps a strictly later time, so this cannot loop.
+  const needsReassessment=!!(edited&&edited.at&&(!reviewed||!reviewed.at||edited.at>=reviewed.at));
   return {
     plant:{id:p.id,name:p.name,category:p.cat,generalNote:p.note},
+    userEdited:edited?{at:edited.at,what:edited.what||''}:null,
+    lastKiReview:reviewed&&reviewed.at?reviewed.at:null,
+    needsReassessment,
     currentHealth:healthFor(id),
     profile:profileFor(id),
     careSchedule:care,
