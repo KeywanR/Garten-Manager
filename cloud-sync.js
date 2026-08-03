@@ -276,20 +276,39 @@
 
   // Append-only: a changed image under a known key (e.g. a replaced cover)
   // gets a NEW date-stamped file; the previous one stays in Drive as history.
+  async function writePhotoBytes(id, blob) {
+    const url = 'https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media&fields=id';
+    await apiFetch(url, { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
+  }
+
   async function uploadPhotoFile(key, dataUrl) {
     await ensurePhotosFolder();
     const metaDate = ((state.photoMeta || {})[key] || {}).date || '';
     const name = gmPhotoFileName(key, metaDate, dataUrl);
     const blob = dataUrlToBlob(dataUrl);
-    let id = '';
+    let id = '', adopted = false;
     if (!photoIndex[key]) {   // first sight of this key: adopt a same-name Drive file
       const found = await driveList(
         "name='" + name + "' and '" + photosFolderId + "' in parents and trashed=false");
-      if (found.length) id = found[0].id;
+      if (found.length) { id = found[0].id; adopted = true; }
     }
     if (!id) id = await createPhotoFile(name);
-    const mediaUrl = 'https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media&fields=id';
-    await apiFetch(mediaUrl, { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
+    try {
+      await writePhotoBytes(id, blob);
+    } catch (e) {
+      // We can SEE more of Drive than we may WRITE: the readonly scope makes
+      // every old file visible to the name search, but write access under
+      // drive.file is per-file and is lost when the OAuth grant is revoked —
+      // which is exactly what "Trennen" used to do. Adopting such a file then
+      // fails with 403 forever, and the photo can never be uploaded again.
+      // Our own fresh copy always works, so fall back to one. A duplicate name
+      // in the photos archive is harmless: the diagnosis run skips by filename,
+      // so the image is not assessed twice.
+      if (!adopted || !/Drive API 403/.test(String((e && e.message) || e))) throw e;
+      console.warn('Kein Schreibzugriff auf vorhandene Datei, lege neue an:', name);
+      id = await createPhotoFile(name);
+      await writePhotoBytes(id, blob);
+    }
     photoIndex[key] = { id: id, fp: dataUrl.length, name: name };
     localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
   }
@@ -738,9 +757,14 @@
   }
 
   function disconnect() {
-    if (accessToken) {
-      try { fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(accessToken), { method: 'POST', mode: 'no-cors' }); } catch (e) {}
-    }
+    // Deliberately does NOT revoke the OAuth grant. Under drive.file, write
+    // access is granted per file, and revoking drops it for every file the app
+    // has ever created — so after "Trennen" and a fresh sign-in, the app could
+    // still SEE its own photos (readonly scope) but no longer overwrite them,
+    // failing with 403 permanently. "Trennen" means "stop syncing on this
+    // device", which clearing the local session achieves in full; it should not
+    // quietly orphan the whole Drive archive. Revoking properly belongs in
+    // Google's own account settings, where the consequence is stated.
     accessToken = ''; tokenExpiry = 0; initialSyncDone = false;
     sessionStorage.removeItem(SS_TOKEN); sessionStorage.removeItem(SS_TOKEN_EXP);
     localStorage.removeItem(LS_ENABLED);
@@ -839,7 +863,11 @@
   // a bug silently destroys data, so it must be testable without a live Drive.
   window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates,
     _syncPhotos: syncPhotos, _photoUploadQueue: photoUploadQueue,
-    _photoIndex: () => photoIndex, _photosPending: () => photosPending };
+    _photoIndex: () => photoIndex, _photosPending: () => photosPending,
+    _uploadPhotoFile: uploadPhotoFile,
+    _setTestSession: (tok, photosFolder) => {          // tests only
+      accessToken = tok; tokenExpiry = Date.now() + 3600e3; photosFolderId = photosFolder;
+    } };
   window.cloudConnect = connect;
   // The primary button now only ever connects or re-authenticates; disconnecting
   // moved to its own button among the sync actions, so it cannot be hit by
