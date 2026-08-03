@@ -220,6 +220,9 @@ a{color:var(--leaf)}
         <button class="btn soft" onclick="importGalleryPhotos()">📥 Fotos importieren</button>
       </div>
       <div class="plant-grid" id="plantGrid"></div>
+      <!-- Importierte Fotos, die noch keiner Pflanze zugeordnet sind. Ablage
+           gehört zu den Pflanzen, nicht in den KI-Bereich. -->
+      <div id="photoInbox"></div>
     </section>
     <section id="view-ki" class="hidden">
       <div class="section-title"><h2>KI-Diagnosen</h2>

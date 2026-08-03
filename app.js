@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v39';
+const APP_BUILD='v40';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -605,6 +605,27 @@ function renderPlants(){
     `<article class="plant-card" onclick="addPlantDialog()" style="cursor:pointer">
       <div class="pc-empty" style="padding:2.5rem 1rem;text-align:center">➕<br><strong>Neue Pflanze hinzufügen</strong><br><span class="meta">z. B. Zimmerpflanzen</span></div>
     </article>`);
+  renderPhotoInbox();
+}
+
+/* Gallery imports arrive without a plant. Filing them is ablage, not diagnosis,
+   so the inbox lives here next to the plants rather than in the KI view — that
+   view is for what Claude contributed, and nothing else. An unfiled photo is
+   invisible in every plant file, so it stays listed until it is placed. */
+function renderPhotoInbox(){
+  const box=document.getElementById('photoInbox');
+  if(!box)return;
+  const un=(window.KiDiagnose&&KiDiagnose.unassigned)?KiDiagnose.unassigned():[];
+  if(!un.length){box.innerHTML='';return}
+  box.innerHTML=`<div class="section-title"><h2>Fotos ohne Pflanze</h2><small>${un.length}</small></div>
+    <div class="task-list">${un.map(([k,m])=>`<article class="task due"><div>
+      <h3>Importiertes Foto</h3>
+      <div class="meta">${fmt(m.date)}</div>
+      <img src="${photoCache[k]}" alt="" style="margin-top:10px;max-width:220px;width:100%;border-radius:12px">
+    </div><div class="actions">
+      <button class="btn primary" onclick="KiDiagnose.assignPhoto('${k}')">Pflanze zuordnen</button>
+      <button class="btn" onclick="KiDiagnose.ignorePhoto('${k}')">Ausblenden</button>
+    </div></article>`).join('')}</div>`;
 }
 
 function renderJournal(){
@@ -1332,7 +1353,8 @@ function buildPlantDossier(id){
     return {task:d.title,type:d.id.split(':')[1],intervalDays:d.interval,activeMonths:d.months,
       lastDone:s.last||null,nextDue:s.next||null,note:d.note||''}});
   const history=plantTimeline(id).map(o=>({date:o.date,type:o.type,text:o.text}));
-  const photos=Object.entries(state.photoMeta||{}).filter(([,m])=>m.plantId===id)
+  const photos=Object.entries(state.photoMeta||{})
+    .filter(([k,m])=>m.plantId===id&&gmPhotoInDrive(k,photoCache[k]))
     .map(([k,m])=>({key:k,date:m.date,caption:m.caption||'',isCover:!!m.cover,
       driveFile:gmDrivePhotoName(k,photoCache[k])}))
     .sort((a,b)=>(a.date||'').localeCompare(b.date||''));
@@ -1365,6 +1387,19 @@ function gmDrivePhotoName(key,dataUrl){
   }catch(e){}
   return gmPhotoFileName(key,'',dataUrl);
 }
+/* Has THIS image actually reached Drive? The fingerprint check matters: a
+   replaced cover keeps its key but is a different image, and the old upload
+   does not vouch for the new one. Only confirmed uploads may be named in the
+   dossier — a driveFile the diagnosis routine cannot open is worse than no
+   entry at all, because it looks like a photo that was considered and wasn't. */
+function gmPhotoInDrive(key,dataUrl){
+  if(typeof dataUrl!=='string')return false;
+  try{
+    const idx=JSON.parse(localStorage.getItem('gm_drive_photo_index')||'{}');
+    const rec=idx[key];
+    return !!(rec&&rec.name&&rec.fp===dataUrl.length);
+  }catch(e){return false}
+}
 /* includePhotos=false builds a light dossier for automatic cloud upload: photo
    base64 data already syncs inside gartenmanager-data.json, so the cloud copy
    only references photos by key instead of doubling every upload. */
@@ -1375,8 +1410,14 @@ async function buildDossierPayload(includePhotos){
   // Without these the diagnosis routine cannot see them at all, because the
   // per-plant dossiers group photos by plantId.
   const unassignedPhotos=Object.entries(state.photoMeta||{})
-    .filter(([,m])=>m&&!m.plantId&&!m.ignored)
+    .filter(([k,m])=>m&&!m.plantId&&!m.ignored&&gmPhotoInDrive(k,photoCache[k]))
     .map(([k,m])=>({driveFile:gmDrivePhotoName(k,photoCache[k]),date:m.date||'',caption:m.caption||''}));
+  // Images this device holds that have not reached Drive yet. They are absent
+  // from the lists above on purpose — the routine cannot open what is not there
+  // — but the count must be stated, or a stalled upload looks like a garden
+  // with nothing new in it.
+  const photosPendingUpload=Object.entries(state.photoMeta||{})
+    .filter(([k,m])=>m&&!m.ignored&&photoCache[k]&&!gmPhotoInDrive(k,photoCache[k])).length;
   // Decisions already taken, so nothing rejected gets proposed again.
   const proposals=(state.kiProposals||[]).map(p=>({id:p.id,type:p.type,plantId:p.plantId,
     title:p.title,status:p.status,date:p.date,decidedAt:p.decidedAt||''}));
@@ -1386,7 +1427,7 @@ async function buildDossierPayload(includePhotos){
   const readMarkers=Object.keys(state.kiRead||{});
   const payload={
     format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
-    appBuild:APP_BUILD,unassignedPhotos,kiProposals:proposals,readMarkers,
+    appBuild:APP_BUILD,unassignedPhotos,photosPendingUpload,kiProposals:proposals,readMarkers,
     readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen.'+(includePhotos
       ?' Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).'
       :' Jedes Foto liegt als eigene Bilddatei im Drive-Unterordner "photos/" (Dateiname = photos[].driveFile). Der Ordner ist ein reines Archiv: auch in der App gelöschte Fotos und ersetzte Titelbilder bleiben dort als Verlauf erhalten (Titelbild-Versionen = frühere Bilder der Fotohistorie).'),
