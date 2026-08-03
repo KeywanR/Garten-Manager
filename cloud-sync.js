@@ -330,12 +330,14 @@
   // in-flight guard keeps overlapping pushes from double-creating files.
   let photoSyncRunning = false;
   let photosPending = 0;          // shown in the status line, never only logged
+  let lastPhotoError = '';        // why the last upload failed, for the same reason
   // uploadFn is a test seam (see _syncPhotos): this loop's give-up behaviour is
   // what silently cost a day of diagnoses, so it is worth testing without Drive.
   async function syncPhotos(uploadFn) {
     if (photoSyncRunning) return;
     const upload = uploadFn || uploadPhotoFile;
     photoSyncRunning = true;
+    lastPhotoError = '';   // a reason from a previous run must not outlive it
     try {
       await loadPhotos();
       for (const k of photoUploadQueue()) {
@@ -344,6 +346,7 @@
           // One bad photo must not cost the whole queue. It stays unindexed,
           // so the next sync retries it; everything behind it still gets up.
           console.warn('Foto-Upload übersprungen:', k, e);
+          lastPhotoError = errText(e);
           if (isAuthError(e)) break;
         }
       }
@@ -677,6 +680,12 @@
 
   /* ------------------------------------------------------------- status UI -- */
   function setStatus(text, kind) { statusText = text; statusKind = kind || 'idle'; renderStatus(); }
+  // Drive errors carry the HTTP status and Google's own message; both matter
+  // when the failure has to be diagnosed from a phone screen.
+  function errText(e) {
+    const s = String((e && e.message) || e || 'Unbekannter Fehler');
+    return s.length > 300 ? s.slice(0, 300) + ' …' : s;
+  }
 
   function renderStatus() {
     const info = document.getElementById('cloudInfo');
@@ -696,10 +705,14 @@
     // total silence — one console warning, while the app still said "Gesichert".
     // If images are outstanding, that has to be on screen.
     const waiting = enabled() && photosPending
-      ? ` · ⏫ ${photosPending} Foto${photosPending === 1 ? '' : 's'} noch nicht hochgeladen` : '';
-    info.textContent = needsAuth
+      ? ` · ⏫ ${photosPending} Foto${photosPending === 1 ? '' : 's'} noch nicht hochgeladen`
+        + (lastPhotoError ? ` (${lastPhotoError})` : '') : '';
+    // Outstanding photos are appended to BOTH branches: "signed out" and
+    // "photos stuck" are different facts, and hiding the second behind the
+    // first is how a stalled upload stays invisible.
+    info.textContent = (needsAuth
       ? '🔑 Nicht bei Google angemeldet – Daten werden gerade nicht synchronisiert'
-      : icon + ' ' + statusText + (enabled() ? last + waiting : '');
+      : icon + ' ' + statusText + (enabled() ? last : '')) + waiting;
     if (btn) {
       btn.textContent = !enabled() ? 'Mit Google Drive verbinden'
         : needsAuth ? 'Bei Google anmelden'
@@ -803,7 +816,14 @@
           await reconcile();
           toast(action === 'connect' ? 'Google Drive verbunden' : 'In Google Drive gesichert');
         }
-      } catch (e) { console.error(e); setStatus('Synchronisierung fehlgeschlagen', 'error'); }
+      } catch (e) {
+        // Never swallow the reason. This runs on a phone, where the console is
+        // unreachable — a bare "fehlgeschlagen" leaves the user with nothing to
+        // act on and nobody able to help them from the outside.
+        console.error(e);
+        setStatus('Synchronisierung fehlgeschlagen: ' + errText(e), 'error');
+        alert('Synchronisierung fehlgeschlagen:\n\n' + errText(e));
+      }
       return;
     }
     if (!enabled()) return;

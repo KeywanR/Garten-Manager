@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v40';
+const APP_BUILD='v41';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
