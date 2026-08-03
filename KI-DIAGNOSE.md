@@ -8,8 +8,19 @@ ein.
 
 Ergebnisse sammelt der Reiter **KI-Diagnosen** in der App (mit Zähler für
 Ungelesenes), damit sie nicht unbemerkt in den einzelnen Pflanzenakten
-verschwinden — siehe `ki-diagnose.js`. Dort werden auch importierte Fotos
-zugeordnet: ohne Pflanze taucht ein Foto in keiner Akte auf.
+verschwinden — siehe `ki-diagnose.js`. Dieser Reiter zeigt **ausschließlich**,
+was Claude beigetragen hat: Diagnosen und Pflegeplan-Vorschläge zur Bestätigung.
+
+Importierte Fotos ohne Pflanze werden im Reiter **Pflanzen** zugeordnet, nicht
+hier — das ist Ablage, keine Diagnose. Ohne Pflanze taucht ein Foto in keiner
+Akte auf und wird deshalb auch nicht ausgewertet.
+
+Ein Foto wird nur dann zur Auswertung angeboten, wenn seine Bilddatei
+nachweislich in Drive liegt (`gmPhotoInDrive` in `app.js`). Ein Dateiname in der
+KI-Akte, den der Lauf nicht öffnen kann, wäre schlimmer als gar kein Eintrag:
+Er sähe aus wie ein geprüftes Foto. Noch nicht hochgeladene Bilder zählt die
+KI-Akte stattdessen unter `photosPendingUpload`, und die App zeigt sie in der
+Sync-Zeile an.
 
 ## Ablauf
 

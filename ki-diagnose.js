@@ -1,18 +1,20 @@
 /* ============================================================================
-   Mein Garten – KI-Diagnosen: Ansicht und Zuordnung
+   Mein Garten – KI-Diagnosen
 
    Diagnosen entstehen NICHT in der App. Claude wertet die Fotos aus dem
    Drive-Ordner aus und schreibt sie über die Inbox zurück
    (gartenmanager-ki-diagnose.json, siehe KI-DIAGNOSE.md). Die App ruft keine
    API auf, braucht keinen Schlüssel und verursacht keine zusätzlichen Kosten.
 
-   Dieses Modul macht nur zwei Dinge:
-   1. Es sammelt die eingegangenen Diagnosen an einer Stelle, mit Zähler für
-      Ungelesenes — sonst verteilen sie sich still über die Pflanzenakten und
-      werden nie gelesen.
-   2. Es lässt importierte Fotos einer Pflanze zuordnen. Aus der Galerie
-      importierte Bilder kommen ohne Pflanze an; erst die Zuordnung bringt sie
-      in die Akte und damit in die KI-Akte, die Claude auswertet.
+   Der KI-Bereich zeigt AUSSCHLIESSLICH das, was Claude beigetragen hat:
+   eingegangene Diagnosen (mit Zähler für Ungelesenes) und Pflegeplan-
+   Vorschläge, die auf Bestätigung warten. Sonst verteilen sich die Diagnosen
+   still über die Pflanzenakten und werden nie gelesen.
+
+   Fotos einer Pflanze zuzuordnen ist KEINE Diagnose, sondern Ablage, und
+   gehört deshalb in den Pflanzen-Bereich (renderPlants in app.js). Die
+   Zuordnungslogik steht weiterhin hier, weil sie zum Foto-Eingang gehört —
+   nur die Darstellung ist umgezogen.
 
    Abhängigkeiten (app.js): state, save, renderAll, toast, photoCache, plant,
    plants, today, esc, fmt, healthFor, openPlantFile.
@@ -70,12 +72,15 @@
 
   /* ---------------------------------------------------------- render ------- */
   function render() {
-    const un = unassigned(), fs = findings().slice(0, 80), nUnread = unread().length;
+    const fs = findings().slice(0, 80), nUnread = unread().length;
     const props = (state.kiProposals || []).filter(p => p.status === 'pending');
 
+    // The badge counts things that want an answer from you: unread diagnoses
+    // and pending plan proposals. Filing a photo under a plant is housekeeping
+    // and belongs in Pflanzen, so it is deliberately not counted here.
     const badge = document.getElementById('kiBadge');
     if (badge) {
-      const n = nUnread + un.length + props.length;
+      const n = nUnread + props.length;
       badge.textContent = n ? String(n) : '';
       badge.style.display = n ? '' : 'none';
     }
@@ -99,16 +104,6 @@
         </div></article>`;
       }).join('')}</div>` : '';
 
-    const unHTML = un.length ? `<div class="section-title"><h2>Fotos ohne Pflanze</h2><small>${un.length}</small></div>
-      <div class="task-list">${un.map(([k, m]) => `<article class="task due"><div>
-        <h3>Importiertes Foto</h3>
-        <div class="meta">${fmt(m.date)}</div>
-        <img src="${photoCache[k]}" alt="" style="margin-top:10px;max-width:220px;width:100%;border-radius:12px">
-      </div><div class="actions">
-        <button class="btn primary" onclick="KiDiagnose.assignPhoto('${k}')">Pflanze zuordnen</button>
-        <button class="btn" onclick="KiDiagnose.ignorePhoto('${k}')">Ausblenden</button>
-      </div></article>`).join('')}</div>` : '';
-
     const fHTML = fs.length ? `<div class="task-list">${fs.map(o => {
       const isNew = !(state.kiRead || {})[o.id];
       const p = plant(o.plantId);
@@ -124,7 +119,7 @@
       : `<div class="empty">Noch keine Diagnosen. Fotografiere Pflanzen in der App – beim nächsten
          Sync landen sie in Google Drive, und Claude trägt die Auswertung hier ein.</div>`;
 
-    box.innerHTML = propHTML + unHTML +
+    box.innerHTML = propHTML +
       `<div class="section-title"><h2>Diagnosen</h2><small>${nUnread} ungelesen</small></div>` + fHTML;
   }
 
@@ -144,6 +139,8 @@
 
   function init() { purgeLegacyApiKey(); render(); }
 
-  window.KiDiagnose = { init, render, markRead, markAllRead, openPlant, assignPhoto, ignorePhoto };
+  // `unassigned` is exported for the Pflanzen view, which now renders the
+  // photo inbox. Everything else is the KI view's own.
+  window.KiDiagnose = { init, render, markRead, markAllRead, openPlant, assignPhoto, ignorePhoto, unassigned };
   window.kiMarkAllRead = markAllRead;
 })();

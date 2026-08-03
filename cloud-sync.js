@@ -294,25 +294,64 @@
     localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
   }
 
+  // A photo is "in Drive" only once an upload of exactly this image data has
+  // been confirmed. The fingerprint comparison matters: a replaced cover keeps
+  // its key but is a different image, and must not count as already uploaded.
+  function photoNeedsUpload(k) {
+    const du = (photoCache || {})[k];
+    if (typeof du !== 'string' || !du.startsWith('data:image/')) return false;
+    const rec = photoIndex[k];
+    return !(rec && rec.fp === du.length && rec.name);
+  }
+  function pendingPhotoCount() {
+    return Object.keys(photoCache || {}).filter(photoNeedsUpload).length;
+  }
+  // Without a valid token every further request fails identically, so there is
+  // nothing to be gained by walking the rest of the queue.
+  function isAuthError(e) { return /Anmeldung abgelaufen/.test(String((e && e.message) || e)); }
+
+  // Never-uploaded photos first, newest first inside each group. A photo taken
+  // this morning must not queue behind forty historical re-uploads — that is
+  // precisely how the 06:20 diagnosis run came up empty on 3 Aug: correcting a
+  // device's folder clears the upload index, which puts every old photo back in
+  // the queue ahead of the new ones.
+  function photoUploadQueue() {
+    const meta = state.photoMeta || {};
+    const dateOf = k => (meta[k] && meta[k].date) || '';
+    const isNew = k => (photoIndex[k] ? 0 : 1);
+    return Object.keys(photoCache || {}).filter(photoNeedsUpload).sort((a, b) =>
+      (isNew(b) - isNew(a))
+      || dateOf(b).localeCompare(dateOf(a))
+      || String(a).localeCompare(String(b)));
+  }
+
   // Upload photos that are new or changed since the last sync. Photos deleted
   // in the app are deliberately left in Drive — they are the history. The
   // in-flight guard keeps overlapping pushes from double-creating files.
   let photoSyncRunning = false;
-  async function syncPhotos() {
+  let photosPending = 0;          // shown in the status line, never only logged
+  // uploadFn is a test seam (see _syncPhotos): this loop's give-up behaviour is
+  // what silently cost a day of diagnoses, so it is worth testing without Drive.
+  async function syncPhotos(uploadFn) {
     if (photoSyncRunning) return;
+    const upload = uploadFn || uploadPhotoFile;
     photoSyncRunning = true;
     try {
       await loadPhotos();
-      const keys = Object.keys(photoCache || {});
-      for (const k of keys) {
-        const du = photoCache[k];
-        if (typeof du !== 'string' || !du.startsWith('data:image/')) continue;
-        const rec = photoIndex[k];
-        if (rec && rec.fp === du.length) continue;       // unchanged since last upload
-        try { await uploadPhotoFile(k, du); }
-        catch (e) { console.warn('Foto-Upload übersprungen:', k, e); break; }   // token/network: retry next sync
+      for (const k of photoUploadQueue()) {
+        try { await upload(k, photoCache[k]); }
+        catch (e) {
+          // One bad photo must not cost the whole queue. It stays unindexed,
+          // so the next sync retries it; everything behind it still gets up.
+          console.warn('Foto-Upload übersprungen:', k, e);
+          if (isAuthError(e)) break;
+        }
       }
-    } finally { photoSyncRunning = false; }
+    } finally {
+      photosPending = pendingPhotoCount();
+      photoSyncRunning = false;
+      try { renderStatus(); } catch (e) {}
+    }
   }
 
   async function downloadRemote() {
@@ -508,14 +547,19 @@
     // whichever device syncs last would silently discard the other's changes.
     try { await mergeIfRemoteNewer(); }
     catch (e) { console.warn('Zusammenführen vor dem Hochladen übersprungen:', e); }
+    // Photos go up BEFORE the data blob. The blob is tens of megabytes and can
+    // take minutes on a phone; running the image uploads after it meant they
+    // met the oldest possible access token and the flakiest part of the sync.
+    // The images are also what the daily diagnosis routine actually opens — the
+    // blob is useless to it — so they are the part that must not be starved.
+    try { await syncPhotos(); } catch (e) { console.warn('Foto-Sync übersprungen:', e); }
     const payload = await buildPayload();
     await uploadContent(JSON.stringify(payload));
     try { setLastRemoteTime(await remoteModified()); } catch (e) {}
     state.meta.lastCloudPush = Date.now();
     save(false);
-    // Photo history first, so the dossier's driveFile names reflect what was
-    // actually uploaded; neither step may break the data sync.
-    try { await syncPhotos(); } catch (e) { console.warn('Foto-Sync übersprungen:', e); }
+    // The dossier stays last: it names the photo files the routine will open,
+    // so it must describe what actually landed in Drive a moment ago.
     try {
       const ki = await buildDossierPayload(false);
       await uploadKiAkte(JSON.stringify(ki, null, 2));
@@ -648,9 +692,14 @@
     // "trennen" directly above text asking you to connect — where tapping it
     // silently switched sync off, the opposite of what the text said.
     const needsAuth = enabled() && !tokenValid();
+    // A photo that never reached Drive cannot be diagnosed, and used to fail in
+    // total silence — one console warning, while the app still said "Gesichert".
+    // If images are outstanding, that has to be on screen.
+    const waiting = enabled() && photosPending
+      ? ` · ⏫ ${photosPending} Foto${photosPending === 1 ? '' : 's'} noch nicht hochgeladen` : '';
     info.textContent = needsAuth
       ? '🔑 Nicht bei Google angemeldet – Daten werden gerade nicht synchronisiert'
-      : icon + ' ' + statusText + (enabled() ? last : '');
+      : icon + ' ' + statusText + (enabled() ? last + waiting : '');
     if (btn) {
       btn.textContent = !enabled() ? 'Mit Google Drive verbinden'
         : needsAuth ? 'Bei Google anmelden'
@@ -768,7 +817,9 @@
 
   // _mergeStates is exported for verification: the merge is the one place where
   // a bug silently destroys data, so it must be testable without a live Drive.
-  window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates };
+  window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates,
+    _syncPhotos: syncPhotos, _photoUploadQueue: photoUploadQueue,
+    _photoIndex: () => photoIndex, _photosPending: () => photosPending };
   window.cloudConnect = connect;
   // The primary button now only ever connects or re-authenticates; disconnecting
   // moved to its own button among the sync actions, so it cannot be hit by
