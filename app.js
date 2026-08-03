@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v47';
+const APP_BUILD='v48';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -1088,13 +1088,40 @@ function photoDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(
    breath, so "no meta" genuinely means "nothing refers to this". */
 async function purgeOrphanPhotos(){
   await loadPhotos();
-  const meta=state.photoMeta||{};
-  const orphans=Object.keys(photoCache).filter(k=>!meta[k]);
-  for(const k of orphans){
-    try{await removePhoto(k)}catch(e){console.warn('Verwaistes Foto konnte nicht entfernt werden',k,e)}
+  const meta=state.photoMeta||{},tomb=state.tombstones||{};
+  /* ONLY photos whose metadata was deliberately DELETED — proven by a tombstone.
+     The first version of this deleted anything photoMeta did not mention, on the
+     reasoning that every code path writes metadata alongside the image. That is
+     true of the code as it stands and false of the data as it exists: covers
+     stored by earlier builds have no photoMeta entry at all, and the plant grid
+     renders a cover straight from photoCache without consulting photoMeta — so
+     "no metadata" was not orphanhood, it was the app's oldest and most visible
+     photos. The purge deleted precisely the pictures the user could see.
+     A tombstone is the only evidence of an actual deletion. Absence of metadata
+     is not evidence of anything. */
+  const deleted=Object.keys(photoCache).filter(k=>!meta[k]&&tomb['photoMeta:'+k]);
+  for(const k of deleted){
+    try{await removePhoto(k)}catch(e){console.warn('Gelöschtes Foto konnte nicht entfernt werden',k,e)}
   }
-  if(orphans.length)console.info(`${orphans.length} verwaiste Foto(s) entfernt`);
-  return orphans.length;
+  if(deleted.length)console.info(`${deleted.length} gelöschte(s) Foto(s) entfernt`);
+  return deleted.length;
+}
+
+/* Give legacy photos the metadata they never had, so they are visible to every
+   part of the app rather than only to the renderers that read photoCache. A
+   photo stored under a plant's id is that plant's Titelbild; anything else is
+   adopted as an unfiled photo rather than guessed at. Runs once per device. */
+async function adoptUntrackedPhotos(){
+  await loadPhotos();
+  state.photoMeta=state.photoMeta||{};
+  let n=0;
+  for(const k of Object.keys(photoCache)){
+    if(state.photoMeta[k])continue;
+    if(plant(k)){state.photoMeta[k]={plantId:k,date:today(),caption:'Titelbild',cover:true};n++}
+    else{state.photoMeta[k]={plantId:'',date:today(),caption:'Wiederhergestellt',cover:false};n++}
+  }
+  if(n)console.info(`${n} Foto(s) nachträglich erfasst`);
+  return n;
 }
 
 async function loadPhotos(){try{const db=await photoDB();
@@ -1194,10 +1221,19 @@ async function importKiPhoto(plantId,dataUrl,caption,asCover,date){
   const d=isDateString(date)?date:today();
   // A first image becomes the title picture AND the first Verlauf entry — it is
   // both "what this plant looks like" and "what it looked like on this date".
+  let becameCover=false;
   if(asCover&&!photoCache[plantId]){
     await putPhoto(plantId,dataUrl);
     state.photoMeta[plantId]={plantId,date:d,caption:caption||'Titelbild',cover:true};
+    becameCover=true;
   }
+  /* The image doubles as the first Verlauf entry only when the plant has no
+     history yet — that is the case this was built for: a plant identified from a
+     photo, where the picture is both what it looks like and what it looked like
+     on that date. Copying it into a Verlauf that already has entries just adds a
+     duplicate, which matters when covers are being restored in bulk. */
+  const hasHistory=Object.values(state.photoMeta||{}).some(m=>m&&m.plantId===plantId&&!m.cover);
+  if(becameCover&&hasHistory)return plantId;
   const key=`timeline|${plantId}|${Date.now()}`;
   await putPhoto(key,dataUrl);
   state.photoMeta[key]={plantId,date:d,caption:caption||'KI-Foto',cover:false};
@@ -1702,6 +1738,10 @@ async function startApp(){
   rebuildCatalog();
   await migrateOldPhotoDB();
   await loadPhotos();
+  // Before anything else touches photos: give legacy images the metadata they
+  // never had. Without it they are invisible to photoMeta-based logic while
+  // still rendering, which is how a purge came to delete visible covers.
+  await adoptUntrackedPhotos();
   migrateTimestamps();
   purgeBadTaskTombstones();
   dedupeKiFindings();
