@@ -432,7 +432,7 @@
      whatever field happened to be present, and where an undecidable comparison
      let the local side win — which is how two devices ended up holding
      different state indefinitely, each convinced it was right. */
-  const TS_MAPS = ['tasks', 'health', 'photoMeta', 'suppressedTasks'];
+  const TS_MAPS = ['tasks', 'health', 'photoMeta', 'suppressedTasks', 'plantEdits', 'kiReviewed'];
   const TS_LISTS = ['customPlants', 'customTasks', 'kiProposals', 'observations'];
   const tsOf = r => (r && r.ts) || '';
 
@@ -673,7 +673,7 @@
       if (!doc || !Array.isArray(doc.entries)) continue;
       for (const e of doc.entries) {
         if (!e || !e.id || applied[e.id]) continue;
-        try { if (applyKiDiagnosis(e)) changed++; } catch (err) { console.warn('KI-Diagnose übersprungen:', e.id, err); }
+        try { if (await applyKiDiagnosis(e)) changed++; } catch (err) { console.warn('KI-Diagnose übersprungen:', e.id, err); }
         // photo: {file, caption?, cover?} — image Claude uploaded to photos/.
         if (e.photo && e.photo.file) {
           const pid = e.plantId || (e.addPlant && (e.addPlant.id || slugify(e.addPlant.name))) || '';
