@@ -152,12 +152,29 @@
     return res;
   }
 
-  async function driveList(query) {
-    const url = 'https://www.googleapis.com/drive/v3/files'
-      + '?q=' + encodeURIComponent(query)
-      + '&fields=' + encodeURIComponent('files(id,name,modifiedTime)')
-      + '&spaces=drive&pageSize=10';
-    return (await (await apiFetch(url)).json()).files || [];
+  // Paginated. This used to fetch a single page of 10 with no ordering and no
+  // page token, which was fine for one-off lookups and quietly fatal for the
+  // diagnosis inbox: every run writes ANOTHER gartenmanager-ki-diagnose.json
+  // under the same name, so after about ten days Drive returned an arbitrary
+  // ten of them. If the newest was not in that page its diagnoses were never
+  // applied, and never retried, because the app had no record it existed —
+  // findings would simply have stopped arriving while every run reported
+  // success. The same cap would have made the "already assessed" ledger
+  // incomplete, re-diagnosing old photos at cost.
+  async function driveList(query, cap) {
+    const out = [];
+    let pageToken = '';
+    do {
+      const url = 'https://www.googleapis.com/drive/v3/files'
+        + '?q=' + encodeURIComponent(query)
+        + '&fields=' + encodeURIComponent('nextPageToken,files(id,name,modifiedTime)')
+        + '&spaces=drive&pageSize=100'
+        + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+      const page = await (await apiFetch(url)).json();
+      out.push(...(page.files || []));
+      pageToken = page.nextPageToken || '';
+    } while (pageToken && out.length < (cap || 1000));
+    return out;
   }
 
   async function ensureFolder() {
@@ -483,7 +500,16 @@
       const lp = out.profiles[id];
       if (!lp) { out.profiles[id] = rp; continue; }
       const m = { ...lp };
-      for (const f of Object.keys(rp)) if (f !== 'ts') m[f] = mergeText(lp[f], rp[f]);
+      // `updated` is a DATE, not profile prose. Line-merging it glued the two
+      // dates together with a newline and grew by one more line on every
+      // cross-device merge — and the diagnosis run treats a set `updated` as
+      // "the user wrote this, do not contradict it", so corrupting the field
+      // corrupts that judgement. Later date wins, like any other timestamp.
+      for (const f of Object.keys(rp)) {
+        if (f === 'ts') continue;
+        if (f === 'updated') { m[f] = (lp[f] || '') > (rp[f] || '') ? lp[f] : rp[f]; continue; }
+        m[f] = mergeText(lp[f], rp[f]);
+      }
       m.ts = tsOf(rp) > tsOf(lp) ? tsOf(rp) : tsOf(lp);
       out.profiles[id] = m;
     }
@@ -509,6 +535,11 @@
         if (typeof data !== 'string' || !data.startsWith('data:image/')) continue;
         try { await putPhoto(k, data); } catch (e) { console.warn('Foto-Merge übersprungen', k, e); }
       }
+      // The photo loop above is add-only, by design: it must never drop an image
+      // this device has not seen yet. Deletions therefore have to be applied
+      // separately, from the merged photoMeta — otherwise a photo deleted on the
+      // other device is re-uploaded from here on the next push and comes back.
+      try { await purgeOrphanPhotos(); } catch (e) { console.warn('Verwaiste Fotos übersprungen:', e); }
       // rebuildCatalog FIRST. cleanupV12 deletes every task whose id is not in
       // `defs`, and `defs` is only rebuilt inside renderAll — so running the
       // cleanup here used to compare incoming data against the OLD catalogue and
@@ -561,7 +592,18 @@
       || (remote.photos && Object.keys(remote.photos).length > 0);
   }
 
+  let pushing = false;
   async function pushLocal() {
+    // Two concurrent first-ever pushes both see fileId === '' and both create a
+    // file, leaving two gartenmanager-data.json in the folder and ensureFileRef
+    // picking one arbitrarily. That is the same split-brain the pinned folder id
+    // was introduced to kill, one level down.
+    if (pushing) return;
+    pushing = true;
+    try { await pushLocalInner(); } finally { pushing = false; }
+  }
+
+  async function pushLocalInner() {
     await loadPhotos();
     if (localIsEmpty()) return;                          // never overwrite the cloud with an empty copy
     // Never blind-overwrite. If the other device has pushed since we last
@@ -802,7 +844,12 @@
 
   /* ------------------------------------------------- change hook (from save) */
   function onLocalChange() {
-    if (!enabled() || !initialSyncDone || applyingRemote) return;
+    // pushLocal() calls save() twice to record lastCloudPush/lastDossierAt, and
+    // save() calls back in here — so every push re-armed the timer and pushed
+    // again, for ever, each cycle re-uploading the entire photo library. It only
+    // stopped when the token expired. A write we caused ourselves is not a
+    // change worth syncing.
+    if (!enabled() || !initialSyncDone || applyingRemote || pushing) return;
     if (!tokenValid()) { setStatus('Nicht gesichert – „Sichern & syncen" antippen', 'warn'); return; }
     clearTimeout(uploadTimer);
     setStatus('Änderung erkannt …', 'busy');
