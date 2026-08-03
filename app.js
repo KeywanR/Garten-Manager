@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v44';
+const APP_BUILD='v46';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -385,6 +385,20 @@ function normalizeState(raw){
   out.tasks=(x.tasks&&typeof x.tasks==='object'&&!Array.isArray(x.tasks))?x.tasks:{};
   out.history=Array.isArray(x.history)?x.history:[];
   out.health=(x.health&&typeof x.health==='object'&&!Array.isArray(x.health))?x.health:{};
+  /* Validation used to live only in applyKiDiagnosis, so an unknown status could
+     still arrive via a backup, a snapshot, or a merge from a device on an older
+     build. The card renders the stored value verbatim while the plant file's
+     dropdown falls back to its first option — the grid then shows one status and
+     the file another, and pressing "Gesundheit speichern" writes whatever the
+     dropdown happens to display, logging a transition that never happened.
+     Every path into state now goes through the same vocabulary. */
+  Object.entries(out.health).forEach(([id,h])=>{
+    if(!h||typeof h!=='object')return;
+    if(h.status&&!isHealthStatus(h.status)){
+      console.warn('Unbekannter Gesundheitsstatus verworfen:',id,h.status);
+      h.status=HEALTH_STATUSES[0];
+    }
+  });
   out.profiles=(x.profiles&&typeof x.profiles==='object'&&!Array.isArray(x.profiles))?x.profiles:{};
   out.observations=Array.isArray(x.observations)?x.observations:[];
   out.photoMeta=(x.photoMeta&&typeof x.photoMeta==='object'&&!Array.isArray(x.photoMeta))?x.photoMeta:{};
@@ -735,6 +749,15 @@ async function applyKiDiagnosis(e){
     for(const t of e.addTasks){
       if(!t||!t.type)continue;
       const tid=`${e.plantId}:${t.type}`;
+      /* A retired task is filtered out of `defs` but its DEFINITION survives in
+         customTasks/baseDefs. So re-adding one looked like a duplicate and was
+         skipped, while the app still reported "Pflegeplan aktualisiert" — the
+         task stayed retired for ever and the dossier then showed the proposal as
+         confirmed AND the task as suppressed, a contradiction the next run had
+         to reason about. Confirming a plan that re-adds it must un-retire it. */
+      if(state.suppressedTasks&&state.suppressedTasks[tid]){
+        delete state.suppressedTasks[tid];changed=true;
+      }
       if(state.customTasks.some(x=>x.id===tid)||baseDefs.some(b=>b.id===tid))continue;
       state.customTasks.push({id:tid,plantId:e.plantId,title:t.title||'Pflege',
         interval:Number(t.interval)||14,months:t.months,note:t.note||'',optional:!!t.optional});
@@ -866,12 +889,63 @@ async function confirmProposal(id){
   state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Bestätigt: ${p.title}`});
   save();renderAll();toast('Bestätigt – Pflegeplan aktualisiert');
 }
-function rejectProposal(id){
+async function rejectProposal(id){
   const p=(state.kiProposals||[]).find(x=>x.id===id);
   if(!p||p.status!=='pending')return;
+  // Rejecting "new plant identified" means the thing is not a plant in this
+  // garden — so the plant the KI already created has to go with it. Marking the
+  // proposal rejected while leaving the plant standing was the one irreversible
+  // outcome in the whole pipeline: nothing else could remove it.
+  if(p.type==='newPlant'&&p.plantId&&plant(p.plantId)){
+    if(!confirm(`„${plant(p.plantId).name}" wurde von der KI angelegt. Ablehnen entfernt die Pflanze samt ihrer Fotos und Aufgaben. Fortfahren?`))return;
+    await removePlantData(p.plantId);
+  }
   p.status='rejected';p.decidedAt=today();
   state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Abgelehnt: ${p.title}`});
-  save();renderAll();toast('Vorschlag abgelehnt');
+  rebuildCatalog();save();renderAll();toast('Vorschlag abgelehnt');
+}
+
+/* Remove a plant and everything hanging off it. Only user/KI-created plants can
+   go: the built-in catalogue lives in code, so deleting one would simply be
+   recreated by rebuildCatalog on the next open — a delete that silently undoes
+   itself is worse than no delete at all.
+
+   Every store the plant appears in must be cleared, or the leftovers resurface:
+   an orphaned photo would keep being uploaded by syncPhotos, and an orphaned
+   photoMeta entry would reappear in the diagnosis dossier. Removal from these
+   maps and lists is what stampChanges turns into tombstones, so the deletion
+   travels to the other device instead of being undone by the next merge. */
+async function removePlantData(id){
+  if(!id)return false;
+  const keys=Object.entries(state.photoMeta||{}).filter(([,m])=>m&&m.plantId===id).map(([k])=>k);
+  if(photoCache[id]&&keys.indexOf(id)===-1)keys.push(id);          // the cover, keyed by plant id
+  for(const k of keys){try{await removePhoto(k)}catch(e){console.warn('Foto konnte nicht gelöscht werden',k,e)}
+    delete state.photoMeta[k]}
+  state.customPlants=(state.customPlants||[]).filter(x=>x.id!==id);
+  state.customTasks=(state.customTasks||[]).filter(t=>t.plantId!==id);
+  state.observations=(state.observations||[]).filter(o=>o.plantId!==id);
+  state.history=(state.history||[]).filter(h=>h.plantId!==id);
+  Object.keys(state.tasks||{}).forEach(tid=>{if(tid.split(':')[0]===id)delete state.tasks[tid]});
+  Object.keys(state.suppressedTasks||{}).forEach(tid=>{if(tid.split(':')[0]===id)delete state.suppressedTasks[tid]});
+  delete (state.health||{})[id];
+  delete (state.profiles||{})[id];
+  delete (state.plantEdits||{})[id];
+  delete (state.kiReviewed||{})[id];
+  return true;
+}
+
+async function deletePlant(id){
+  const p=plant(id);if(!p)return;
+  // Built-ins are defined in code and would come straight back.
+  if(!(state.customPlants||[]).some(x=>x.id===id))
+    return alert('Diese Pflanze gehört zum festen Bestand der App und kann nicht gelöscht werden.');
+  const nPhotos=Object.values(state.photoMeta||{}).filter(m=>m&&m.plantId===id).length;
+  if(!confirm(`„${p.name}" wirklich löschen?\n\nEntfernt die Pflanze, ihre Pflegeaufgaben, ihren Verlauf und ${nPhotos} Foto${nPhotos===1?'':'s'} aus der App. Die Bilddateien in Google Drive bleiben als Archiv erhalten.`))return;
+  await removePlantData(id);
+  (state.kiProposals||[]).forEach(x=>{
+    if(x.plantId===id&&x.status==='pending'){x.status='rejected';x.decidedAt=today()}});
+  state.history.unshift({date:today(),taskId:'plant',plantId:'',title:`Pflanze gelöscht: ${p.name}`});
+  rebuildCatalog();save();closePlantFile();renderAll();toast(`„${p.name}" gelöscht`);
 }
 
 /* Retire a care task. The definition itself is never deleted — built-in tasks
@@ -946,6 +1020,31 @@ function photoDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(
   r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains('photos'))db.createObjectStore('photos');
     if(!db.objectStoreNames.contains('backups'))db.createObjectStore('backups',{keyPath:'id'})};
   r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
+
+/* Delete image blobs no photoMeta entry claims any more.
+
+   photoMeta deletions merge correctly — they are tombstoned and travel between
+   devices — but the blob in IndexedDB was never removed with them. buildPayload
+   serialises photoCache wholesale, so a device that still held the blob put the
+   deleted image straight back into the cloud file, and the device that deleted
+   it got the image restored on the next merge. Deleting a Titelbild visibly
+   undid itself, because the plant grid reads the cover from photoCache without
+   consulting photoMeta; deleting anything else undid itself invisibly, leaving
+   the picture in the payload forever. Nothing else in the app ever removed an
+   orphan, which is a good part of why that payload reached 60 MB.
+
+   Every code path that stores a photo writes a photoMeta entry in the same
+   breath, so "no meta" genuinely means "nothing refers to this". */
+async function purgeOrphanPhotos(){
+  await loadPhotos();
+  const meta=state.photoMeta||{};
+  const orphans=Object.keys(photoCache).filter(k=>!meta[k]);
+  for(const k of orphans){
+    try{await removePhoto(k)}catch(e){console.warn('Verwaistes Foto konnte nicht entfernt werden',k,e)}
+  }
+  if(orphans.length)console.info(`${orphans.length} verwaiste Foto(s) entfernt`);
+  return orphans.length;
+}
 
 async function loadPhotos(){try{const db=await photoDB();
   photoCache=await new Promise((resolve,reject)=>{const tx=db.transaction('photos','readonly'),st=tx.objectStore('photos'),r=st.getAllKeys(),out={};
@@ -1107,6 +1206,7 @@ function openPlantFile(id){
           <div class="field full"><label>Allgemeiner Hinweis</label><textarea id="pi-note">${esc(custom.note||'')}</textarea></div>
         </div>
         <button class="btn primary" onclick="savePlantIdentity('${id}')">Pflanze speichern</button>
+        <button class="btn danger" onclick="deletePlant('${id}')">Pflanze löschen</button>
       </section>`:''}
 
       <section class="fp full"><h3>🌿 Stammdaten und Pflegehinweise</h3>
@@ -1392,7 +1492,16 @@ async function runIntegrityCheck(announce=false){
 async function resetApp(){
   if(!confirm('Wirklich alle Daten zurücksetzen? Vorher wird automatisch ein Schnappschuss angelegt.'))return;
   await createLocalSnapshot('vor Zurücksetzen',false);
-  localStorage.removeItem(APP_KEY);state=defaultState();save(false);await restorePhotos({});renderAll();
+  localStorage.removeItem(APP_KEY);state=defaultState();
+  /* Every other wholesale replacement resets the baseline; this one did not, and
+     it is the most destructive place to forget. save() would otherwise diff the
+     empty state against the pre-reset snapshot and write a tombstone dated NOW
+     for every record that existed — tasks, health, observations, custom plants,
+     the lot. Those tombstones are part of state, so the first thing added after
+     a reset would push them to Drive and delete the other device's copy too.
+     A reset must mean "this device forgets", never "the garden is deleted". */
+  resetTsBaseline();
+  save(false);await restorePhotos({});renderAll();
   toast('Gartenmanager zurückgesetzt');
 }
 
