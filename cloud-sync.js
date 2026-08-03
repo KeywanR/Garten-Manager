@@ -803,12 +803,12 @@
   /* ------------------------------------------------- change hook (from save) */
   function onLocalChange() {
     if (!enabled() || !initialSyncDone || applyingRemote) return;
-    if (!tokenValid()) { setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); return; }
+    if (!tokenValid()) { setStatus('Nicht gesichert – „Sichern & syncen" antippen', 'warn'); return; }
     clearTimeout(uploadTimer);
     setStatus('Änderung erkannt …', 'busy');
     uploadTimer = setTimeout(() => {
       pushLocal().then(() => setStatus('Gesichert', 'ok'))
-        .catch(e => { console.error(e); setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); });
+        .catch(e => { console.error(e); setStatus('Nicht gesichert – „Sichern & syncen" antippen', 'warn'); });
     }, UPLOAD_DEBOUNCE);
   }
 
@@ -821,7 +821,7 @@
     if (!uploadTimer) return;                            // nothing pending
     clearTimeout(uploadTimer); uploadTimer = null;
     pushLocal().then(() => setStatus('Gesichert', 'ok'))
-      .catch(e => { console.warn('Hintergrund-Sicherung', e); setStatus('Nicht gesichert – „Jetzt sichern" antippen', 'warn'); });
+      .catch(e => { console.warn('Hintergrund-Sicherung', e); setStatus('Nicht gesichert – „Sichern & syncen" antippen', 'warn'); });
   });
 
   /* -------------------------------------------------------------- startup --- */
