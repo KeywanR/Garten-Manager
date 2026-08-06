@@ -298,16 +298,93 @@
     await apiFetch(url, { method: 'PATCH', headers: { 'Content-Type': blob.type }, body: blob });
   }
 
+  /* Is this exact image already in Drive under a DIFFERENT key? The app stores
+     one image under several keys by design — filing an inbox photo under a plant
+     copies it to the cover key, and a restored cover is written again as a
+     timeline entry. Each copy used to become its own Drive file, and since the
+     diagnosis run's "already assessed" ledger is a list of FILENAMES, every copy
+     read as a photo nobody had ever looked at. That is what re-diagnosed the
+     July photos on 6 Aug: same picture, new name, no memory of it.
+
+     A filename is not an image. Point the new key at the file the identical
+     bytes already have, upload nothing, and the run recognises it. */
+  function aliasTarget(key, dataUrl) {
+    for (const k of Object.keys(photoIndex)) {
+      if (k === key) continue;
+      const rec = photoIndex[k];
+      if (!rec || !rec.name || rec.fp !== dataUrl.length) continue;
+      if ((photoCache || {})[k] === dataUrl) return rec;
+    }
+    return null;
+  }
+
+  /* Collapse duplicates that are ALREADY indexed. Aliasing on upload only helps
+     copies made from now on; the ones uploaded before it existed each still own
+     a separate Drive file and would each still be offered to the run as new.
+
+     The canonical file is the one with the smallest name, which is arbitrary but
+     — crucially — the same arbitrary choice on every device. A device-dependent
+     canon would have the phone and the iPad each rewriting the other's index
+     every sync. Idempotent, so it simply runs with each photo sync. */
+  function dedupePhotoIndex() {
+    const groups = new Map();   // image bytes -> keys holding exactly them
+    for (const k of Object.keys(photoIndex)) {
+      const rec = photoIndex[k], data = (photoCache || {})[k];
+      if (!rec || !rec.name || typeof data !== 'string' || rec.fp !== data.length) continue;
+      if (!groups.has(data)) groups.set(data, []);
+      groups.get(data).push(k);
+    }
+    let changed = 0;
+    // Canon first, aliases after — picking the canon mid-walk would leave the
+    // keys already rewritten pointing at a file that just lost the election.
+    for (const keys of groups.values()) {
+      if (keys.length < 2) continue;
+      const canon = keys.map(k => photoIndex[k]).reduce((a, b) => (b.name < a.name ? b : a));
+      for (const k of keys) {
+        const rec = photoIndex[k];
+        if (rec.name === canon.name && rec.id === canon.id) continue;
+        photoIndex[k] = { id: canon.id, fp: rec.fp, name: canon.name, alias: true };
+        changed++;
+      }
+    }
+    if (changed) {
+      localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+      console.info(`${changed} doppelte(s) Foto(s) auf eine Drive-Datei zusammengeführt`);
+    }
+    return changed;
+  }
+
   async function uploadPhotoFile(key, dataUrl) {
     await ensurePhotosFolder();
     const metaDate = ((state.photoMeta || {})[key] || {}).date || '';
     const name = gmPhotoFileName(key, metaDate, dataUrl);
+    /* An alias may never be written to: the file belongs to the other key, and a
+       PATCH here would overwrite that key's image in Drive with this one. A
+       changed image under an aliased key therefore drops the alias and takes the
+       normal path below, which creates a file of its own. */
+    const stale = photoIndex[key];
+    if (stale && stale.alias) delete photoIndex[key];
+    const twin = aliasTarget(key, dataUrl);
+    if (twin) {
+      photoIndex[key] = { id: twin.id, fp: dataUrl.length, name: twin.name, alias: true };
+      localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+      return;
+    }
     const blob = dataUrlToBlob(dataUrl);
-    let id = '', adopted = false;
+    let id = '', adopted = false, storedName = name;
     if (!photoIndex[key]) {   // first sight of this key: adopt a same-name Drive file
-      const found = await driveList(
-        "name='" + name + "' and '" + photosFolderId + "' in parents and trashed=false");
-      if (found.length) { id = found[0].id; adopted = true; }
+      /* Both names, because the naming scheme gained a date suffix on 3 Aug. A
+         device with an empty index would otherwise re-upload every legacy photo
+         under its new dated name — which is precisely the mass rename that made
+         thirty-odd assessed photos look new and cost four mornings of runs.
+         The adopted name is what goes in the index: the dossier must report the
+         file that actually exists, not the one we would have created. */
+      const legacy = gmPhotoFileName(key, '', dataUrl);
+      for (const candidate of (legacy === name ? [name] : [name, legacy])) {
+        const found = await driveList(
+          "name='" + candidate + "' and '" + photosFolderId + "' in parents and trashed=false");
+        if (found.length) { id = found[0].id; adopted = true; storedName = candidate; break; }
+      }
     }
     if (!id) id = await createPhotoFile(name);
     try {
@@ -324,9 +401,10 @@
       if (!adopted || !/Drive API 403/.test(String((e && e.message) || e))) throw e;
       console.warn('Kein Schreibzugriff auf vorhandene Datei, lege neue an:', name);
       id = await createPhotoFile(name);
+      storedName = name;
       await writePhotoBytes(id, blob);
     }
-    photoIndex[key] = { id: id, fp: dataUrl.length, name: name };
+    photoIndex[key] = { id: id, fp: dataUrl.length, name: storedName };
     localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
   }
 
@@ -376,6 +454,7 @@
     lastPhotoError = '';   // a reason from a previous run must not outlive it
     try {
       await loadPhotos();
+      dedupePhotoIndex();   // needs the blobs, so after loadPhotos and before the queue
       for (const k of photoUploadQueue()) {
         try { await upload(k, photoCache[k]); }
         catch (e) {
@@ -911,7 +990,7 @@
   window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates,
     _syncPhotos: syncPhotos, _photoUploadQueue: photoUploadQueue,
     _photoIndex: () => photoIndex, _photosPending: () => photosPending,
-    _uploadPhotoFile: uploadPhotoFile,
+    _uploadPhotoFile: uploadPhotoFile, _dedupePhotoIndex: dedupePhotoIndex,
     _setTestSession: (tok, photosFolder) => {          // tests only
       accessToken = tok; tokenExpiry = Date.now() + 3600e3; photosFolderId = photosFolder;
     } };
