@@ -13,11 +13,25 @@ der Morgenlauf schon gesehen hat — und umgekehrt.
 nicht, sofort abbrechen und den Nutzer bitten, ihn in den Einstellungen zu
 verbinden — niemals raten oder mit Platzhalterdaten weiterarbeiten.
 
-**Wartung:** Diese Datei und der Prompt der geplanten Routine (claude.ai →
-Routines → „Garten-Manager Tagesdiagnose") beschreiben denselben Ablauf und
-teilen sich dasselbe Gedächtnis. Änderungen hier immer auch dort nachziehen —
-driften die beiden auseinander (etwa beim Statuswert oder bei `sourcePhoto`),
-verdirbt das still den gemeinsamen Ledger.
+**Wartung:** Diese Datei und der Prompt der täglichen Routine beschreiben
+denselben Ablauf und teilen sich dasselbe Gedächtnis. Änderungen hier immer auch
+dort nachziehen — driften die beiden auseinander (etwa beim Statuswert oder bei
+`sourcePhoto`), verdirbt das still den gemeinsamen Ledger.
+
+Die Routine ist **kein** claude.ai-Chat-Task und steht in „Chats and tasks" oder
+unter „Scheduled" nirgends. Sie ist eine **Claude-Code-Cloud-Routine**:
+
+- Oberfläche: <https://claude.ai/code/routines>
+- Name: „Garten-Manager Tagesdiagnose", id `trig_01WGicrr1NgzQ11gYRMcxT6w`
+- Cron `20 4 * * *` (UTC) = 06:20 Wien, Konto riahi@iiasa.ac.at
+- Aus Claude Code erreichbar über das `RemoteTrigger`-Tool (`/schedule`)
+
+Das steht hier so ausführlich, weil das Suchen danach einmal eine Stunde
+gekostet hat: die claude.ai-Oberfläche zeigt diese Routinen schlicht nicht an.
+
+Die Routine läuft in einer Cloud-Sandbox **ohne Git-Checkout und ohne Zugriff
+auf diese Skill** — ihr Prompt muss den ganzen Ablauf selbst enthalten. Ein
+schlanker „nutze die Skill garten"-Prompt funktioniert dort nicht.
 
 ## Ordner — immer per ID ansprechen
 
@@ -33,10 +47,11 @@ Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
 - `plants[]` — je Pflanze `plant.id`, `plant.name`, `currentHealth`, `profile`,
   `careSchedule`, `suppressedTasks`, `timeline`, `photos[]` (mit `driveFile`, `date`)
 - je Pflanze zusätzlich `userEdited` (`{at, what}` — was der **Nutzer** zuletzt
-  selbst geändert hat), `lastKiReview` (wann zuletzt geprüft) und
-  `needsReassessment`. Die Entscheidung triffst du allein an
+  selbst beigetragen hat: eine Korrektur an Name oder Akte, **oder** eine neue
+  Beobachtung, Maßnahme oder Ernte im Wortlaut), `lastKiReview` (wann zuletzt
+  geprüft) und `needsReassessment`. Die Entscheidung triffst du allein an
   `needsReassessment: true` — die App hat die beiden Zeitstempel dafür schon
-  verglichen. `userEdited.what` sagt dir, *was* korrigiert wurde; `lastKiReview`
+  verglichen. `userEdited.what` sagt dir, *was* beigetragen wurde; `lastKiReview`
   ist reine Information.
 - `unassignedPhotos[]` — importierte Fotos ohne Pflanze
 - `kiProposals[]` — frühere Vorschläge mit `status`
@@ -66,7 +81,12 @@ Vorschlägen als Folge.
 Es gibt **zwei** Arten von Arbeit — beide prüfen:
 
 **(a) NEUE FOTOS** = (ZUGEORDNET ∪ OFFEN) − BEREITS_AUSGEWERTET.
-**(b) KORRIGIERTE PFLANZEN** = alle mit `needsReassessment: true` (höchstens 6).
+**(b) PFLANZEN MIT NUTZER-EINGABE** = alle mit `needsReassessment: true`
+(höchstens 6). Das sind zwei verschiedene Anlässe im selben Flag: eine
+**Korrektur** (Name, Kategorie, Akte, Status — der Pflegeplan kann darauf
+beruhen) oder ein **neuer Eintrag** des Nutzers (Beobachtung, Behandlung,
+Krankheit, Ernte — er hat etwas gesehen oder gefragt). `userEdited.what` sagt
+dir, welcher der beiden Fälle vorliegt; behandle beide in Abschnitt 4b.
 
 Der `photos`-Ordner ist ein Archiv und wird nie aufgeräumt. Dateien, die weder in
 ZUGEORDNET noch in OFFEN stehen, sind ersetzte Titelbilder oder in der App
@@ -75,6 +95,13 @@ gelöschte Bilder wieder auf. Still ignorieren.
 
 Sind (a) und (b) beide leer: nichts schreiben, nur „Keine neuen Fotos, keine
 Korrekturen." melden. Sonst höchstens 12 Fotos, neueste zuerst.
+
+**Dieselbe Aufnahme unter zwei Dateinamen ist kein neues Foto.** Fällt dir auf,
+dass ein Kandidat byte-identisch mit einem bereits ausgewerteten Bild ist (etwa
+gleiche Dateigröße, dieselbe Pflanze, dasselbe Datum), dann werte ihn **nicht**
+aus und schreibe auch keinen „ist ein Duplikat"-Eintrag — überspring ihn still
+und nenn die Zahl im Bericht. Ein Duplikat-Eintrag kostet den Nutzer eine
+Zeile in der Pflanzenakte für eine Aussage über Dateinamen.
 
 ## 4. Beurteilen — mit Bildverlauf
 
@@ -88,11 +115,28 @@ schlechter als beim letzten Mal".
 (`profile.updated` gesetzt) ist maßgeblich — nicht widersprechen, keine
 überholten Ratschläge wiederholen.
 
-## 4b. Korrigierte Pflanzen — Pflegeplan neu prüfen
+## 4b. Pflanzen mit Nutzer-Eingabe — antworten und Pflegeplan prüfen
 
-Für jede Pflanze mit `needsReassessment: true`:
+Für jede Pflanze mit `needsReassessment: true`. Lies zuerst `userEdited.what`
+und die `timeline`-Einträge, die neuer sind als `lastKiReview` — das ist, was
+der Nutzer beigetragen hat, seit du zuletzt hingesehen hast.
 
-Der Nutzer hat etwas richtiggestellt — `userEdited.what` sagt was. Der
+**Steht dort eine Frage, beantworte sie.** Das ist der wichtigste Teil dieses
+Abschnitts. Der Nutzer tippt seine Frage in „Neue Beobachtung" und erwartet die
+Antwort am nächsten Morgen in der Pflanzenakte — sie gehört in `observation`,
+in klaren Sätzen, mit dem Vorbehalt, dass du die Pflanze nur vom Foto kennst.
+Eine unbeantwortete Frage ist der eine Fehler, den der Nutzer sofort bemerkt.
+
+Auch ohne Frage gilt: berichtet er eine Beobachtung („Blätter rollen sich ein",
+„seit gestern Läuse"), nimm sie ernst wie ein Foto — bestätige, ordne ein, oder
+widersprich mit Begründung. Passiert daraufhin etwas am Pflegeplan, kommt das
+wie unten in **ein** `proposePlan`. Ist eine reine Notiz ohne Handlungsbedarf
+(eine Ernte, ein Gießvermerk), reicht ein knapper Eintrag ohne `proposePlan` —
+aber ein Eintrag muss sein, sonst steht die Pflanze morgen wieder auf der Liste.
+
+**Bei einer Korrektur** — `userEdited.what` nennt einen neuen Namen, eine neue
+Kategorie oder einen selbst gesetzten Status — kommt die Pflegeplan-Prüfung
+dazu. Der Nutzer hat etwas richtiggestellt. Der
 springende Punkt ist nicht der Name, sondern der Plan: `careSchedule` wurde oft
 aus der **falschen** Annahme abgeleitet. Heißt eine Pflanze jetzt „Imperata
 cylindrica" statt „Rotes Ziergras (Kübel)", passen Gieß-, Dünge- und
@@ -115,8 +159,8 @@ korrigierten Art, keine Änderung nötig"). Fehlt der Eintrag, gilt die Pflanze
 weiterhin als unbearbeitet und wird jeden Morgen erneut geprüft — Tag für Tag,
 auf Kosten des Nutzers.
 
-Ein solcher Eintrag braucht **kein** `sourcePhoto`; es geht um die Korrektur,
-nicht um ein Foto. Pflicht sind `id` und `plantId`.
+Ein solcher Eintrag braucht **kein** `sourcePhoto`; es geht um die Eingabe des
+Nutzers, nicht um ein Foto. Pflicht sind `id` und `plantId`.
 
 ## 5. Fotos ohne Pflanze
 
@@ -186,6 +230,10 @@ trotzdem falsch:
   **stopp**. Eine aus einem Foto erkannte Pflanze bleibt eine Vermutung.
 - Du willst ein Foto auswerten, das weder in ZUGEORDNET noch in OFFEN steht —
   **stopp**. Das ist ein ersetztes oder gelöschtes Bild.
+- Du hast eine Frage des Nutzers gelesen und willst stattdessen nur den
+  Pflegeplan prüfen — **stopp**. Die Frage zuerst, in `observation`.
+- Du willst einen Eintrag schreiben, der im Kern sagt „dasselbe Bild unter
+  anderem Dateinamen" — **stopp**. Still überspringen, im Bericht zählen.
 - Du willst einen eigenen Statustext formulieren — **stopp**. Nur die vier
   Werte, zeichengenau, sonst verwirft die App den Eintrag stillschweigend.
 - Du hast eine Pflanze mit `needsReassessment` geprüft, willst aber keinen
@@ -286,11 +334,15 @@ erfordern.
 
 ## Bericht
 
-Höchstens sieben Zeilen. Zuerst und deutlich: **welche neuen Pflanzen angelegt
-wurden** (oder „keine"). Dann Anzahl ausgewerteter Fotos, betroffene Pflanzen,
-Veränderungen aus dem Bildvergleich. Dann: welche **korrigierten Pflanzen** neu
-geprüft wurden und was das für ihren Pflegeplan heißt. Dann offene Vorschläge
-zur Bestätigung und übersprungene Fotos. Zuletzt, falls `photosPendingUpload`
+Höchstens sieben Zeilen. Zuerst und deutlich: **welche Fragen des Nutzers du
+beantwortet hast** (oder „keine offenen Fragen"), dann **welche neuen Pflanzen
+angelegt wurden** (oder „keine"). Dann Anzahl ausgewerteter Fotos, betroffene
+Pflanzen, Veränderungen aus dem Bildvergleich. Dann: welche Pflanzen wegen
+einer Nutzer-Eingabe neu geprüft wurden und was das für ihren Pflegeplan heißt.
+Dann offene Vorschläge zur Bestätigung, übersprungene Fotos und — als eigene
+Zahl — wie viele Kandidaten als Duplikat übersprungen wurden (bleibt die Zahl
+über Tage hoch, stimmt etwas mit dem Foto-Upload der App nicht).
+Zuletzt, falls `photosPendingUpload`
 > 0: „Achtung: N Foto(s) sind noch nicht in Drive angekommen und konnten nicht
 ausgewertet werden — App öffnen und synchronisieren."
 

@@ -690,6 +690,18 @@ function addObservation(id,type,text){
   if(!text)return;
   state.observations.unshift({id:`obs-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,plantId:id,date:today(),type,text});
   state.history.unshift({date:today(),taskId:'observation',plantId:id,title:type,note:text});
+  /* Your own words about a plant are the strongest signal the app has, and until
+     now they reached the daily run and were never acted on: the run only looks
+     at plants with a new photo or a pending correction, and an observation was
+     neither. A question typed here — "why are the tomato leaves curling?" —
+     simply sat in the timeline. Stamping it as an edit puts the plant on the
+     run's list, and the text goes along so the run knows what was asked.
+
+     Every note therefore costs one entry in the next run, harvest and watering
+     logs included. That is deliberate: the alternative is guessing which notes
+     deserve an answer, and a filter that silently swallows a real question is
+     worse than a run that occasionally replies "nothing to change". */
+  markPlantEdited(id,`${type}: ${String(text).slice(0,200)}`);
   save();renderJournal();renderPlants();
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);
   toast('Eintrag gespeichert');
@@ -741,6 +753,7 @@ function addHarvest(id){
   if(parsed){o.amount=parsed.amount;o.unit=parsed.unit}
   state.observations.unshift(o);
   state.history.unshift({date:today(),taskId:'harvest',plantId:id,title:`Ernte: ${raw}`,note});
+  markPlantEdited(id,`Ernte: ${raw}${note?` – ${String(note).slice(0,160)}`:''}`);
   save();renderAll();
   if(!document.getElementById('plantFile').classList.contains('hidden'))openPlantFile(id);
   toast(`Ernte eingetragen: ${raw}`);
@@ -1604,10 +1617,16 @@ function buildPlantDossier(id){
     return {task:d.title,type:d.id.split(':')[1],intervalDays:d.interval,activeMonths:d.months,
       lastDone:s.last||null,nextDue:s.next||null,note:d.note||''}});
   const history=plantTimeline(id).map(o=>({date:o.date,type:o.type,text:o.text}));
+  /* One entry per Drive file. A cover is a byte-copy of the photo it was made
+     from and the two keys now share a single Drive file, so without this the
+     same filename would be listed twice for one plant — and a run that reads a
+     filename twice has to work out for itself that it is not two pictures. */
+  const seenFiles=new Set();
   const photos=Object.entries(state.photoMeta||{})
     .filter(([k,m])=>m.plantId===id&&gmPhotoInDrive(k,photoCache[k]))
     .map(([k,m])=>({key:k,date:m.date,caption:m.caption||'',isCover:!!m.cover,
       driveFile:gmDrivePhotoName(k,photoCache[k])}))
+    .filter(p=>{if(seenFiles.has(p.driveFile))return false;seenFiles.add(p.driveFile);return true})
     .sort((a,b)=>(a.date||'').localeCompare(b.date||''));
   // What YOU changed about this plant, and when the run last looked at it. If
   // your correction is newer, the care plan was derived from something now known
