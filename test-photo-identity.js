@@ -338,6 +338,26 @@ const img = (ch, n) => 'data:image/jpeg;base64,' + ch.repeat(n);
       ctx.window.CloudSync._photoIndex().orig.id === 'shared');
   }
 
+  /* ================== build label matches the cache name ================== */
+  section('APP_BUILD and the service worker CACHE agree');
+  {
+    /* renderBuildInfo compares these two at runtime and tells the user to close
+       and reopen the app when they differ. Bumping CACHE without APP_BUILD does
+       not merely mislabel the build - it pins that warning on permanently,
+       because the two can then never converge. That happened on v49 and again
+       on v50. A wrong version label is cosmetic; a stuck "your app is stale"
+       banner teaches the user to ignore the one signal that matters when it is
+       finally true. */
+    const appSrc = fs.readFileSync(APP_SRC, 'utf8');
+    const swSrc = fs.readFileSync(path.join(__dirname, 'service-worker.js'), 'utf8');
+    const app = appSrc.match(/APP_BUILD\s*=\s*'([^']+)'/);
+    const sw = swSrc.match(/CACHE\s*=\s*'mein-garten-([^']+)'/);
+    check('APP_BUILD found in app.js', !!app);
+    check('CACHE found in service-worker.js', !!sw);
+    check('they name the same version', !!app && !!sw && app[1] === sw[1],
+      'APP_BUILD=' + (app && app[1]) + ' vs CACHE=' + (sw && sw[1]));
+  }
+
   console.log('\n' + (failures ? failures + ' FAILURE(S)' : 'all checks passed'));
   process.exit(failures ? 1 : 0);
 })();
