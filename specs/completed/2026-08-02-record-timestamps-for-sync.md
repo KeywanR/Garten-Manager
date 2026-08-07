@@ -1,6 +1,6 @@
 # Per-record timestamps so the newer change always wins
 
-**Status:** Active — not yet implemented
+**Status:** COMPLETE - implemented despite this header having said otherwise. Verified in code: TS_MAPS in app.js and cloud-sync.js, tombstones, resetTsBaseline, meta.deviceId tie-breaking, and kiRead values migrated from true to ISO timestamps. Known cosmetic gap: ki-diagnose.js still assigns `true` and relies on normalizeState to stamp it, so the timestamp records the save rather than the read.
 **Date:** 2026-08-02
 **Type:** refactor
 **Scope:** Give every mutable record a change timestamp, and make the sync merge decide by it. Replaces the current mixture of per-type heuristics that cannot always tell which side is newer.

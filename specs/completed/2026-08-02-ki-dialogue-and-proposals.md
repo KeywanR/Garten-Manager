@@ -1,6 +1,6 @@
 # KI dialogue: image history, plant assignment, and confirmable proposals
 
-**Status:** Active
+**Status:** COMPLETE - all five parts shipped. Verified present in code: unassignedPhotos in the dossier, assignDrivePhotoToPlant, kiProposals, proposePlan, needsReview, editable plant identity, and skills/garten/SKILL.md.
 **Date:** 2026-08-02
 **Type:** new-feature
 **Scope:** Turn the daily diagnosis from a one-way feed into a dialogue — the routine compares against earlier photos, assigns or creates plants for imported photos, and proposes treatment changes that only take effect once confirmed in the app. Plus a `/garten` skill to run the assessment on demand.

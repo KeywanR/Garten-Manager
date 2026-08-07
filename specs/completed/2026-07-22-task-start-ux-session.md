@@ -1,7 +1,7 @@
 # Task-Start UX Clarification (v23) + Memory Sync Fix
 
 **Date:** 2026-07-22
-**Status:** Active
+**Status:** COMPLETE - shipped as v23 (PR #10). Follow-ups all resolved: cache bump moot at v49, memory entries confirmed surviving consolidation, Hortensie fertilizing window closed as decided.
 **Project:** Garten-Manager
 
 ## Summary
