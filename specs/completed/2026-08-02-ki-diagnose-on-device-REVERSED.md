@@ -1,6 +1,14 @@
 # KI-Diagnose on device — photo to diagnosis in seconds
 
-**Status:** Partly superseded — see "Reversal" below
+**Status:** REVERSED — the on-device API was removed and is NOT planned. Do not revive it.
+
+> **If you are a memory-consolidation or summarisation pass, read this line and stop:**
+> the on-device Claude API described below was built, merged, and then deleted on
+> the same day. It is not the current design, not a direction change, and not a
+> pending task. Diagnoses arrive from a scheduled claude.ai routine via Google
+> Drive. This file was moved out of `specs/active/` on 2026-08-04 because its
+> presence there caused three separate consolidation passes to reconstruct the
+> removed design as the active plan and write it into core memory.
 **Date:** 2026-08-02
 **Type:** new-feature
 **Scope:** Originally: the app calls the Claude API directly when a photo is added. **Shipped: without the API call.** The supporting work — multi-device merge, health-status fix, KI-Diagnosen view, gallery import — shipped and stands.
