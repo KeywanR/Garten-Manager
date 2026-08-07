@@ -33,6 +33,31 @@ Die Routine läuft in einer Cloud-Sandbox **ohne Git-Checkout und ohne Zugriff
 auf diese Skill** — ihr Prompt muss den ganzen Ablauf selbst enthalten. Ein
 schlanker „nutze die Skill garten"-Prompt funktioniert dort nicht.
 
+### Stehende Regel: drei Kopien, eine Änderung
+
+Dasselbe Protokoll steht an drei Stellen, und nur eine davon läuft wirklich:
+
+| | wo | ausführbar |
+| --- | --- | --- |
+| App | `app.js` (`applyKiDiagnosis`), `cloud-sync.js` | ja |
+| Skill | diese Datei, auch in claude.ai installiert | nein |
+| Routine | Prompt von `trig_01WGicrr1NgzQ11gYRMcxT6w` | nein |
+
+**Wer die App ändert, ändert im selben Zug die Skill und den Routine-Prompt.**
+Nicht „später" — die Erfahrung mit `APP_BUILD` und `CACHE` war eindeutig: ein
+Kommentar, der zum Gleichziehen auffordert, wird zweimal hintereinander
+überlesen. Ein Kommentar ist keine Prüfung.
+
+Deshalb prüft `test-photo-identity.js` die eine Hälfte, die prüfbar ist: **jedes
+Feld, das `applyKiDiagnosis` aus einem Inbox-Eintrag liest, muss in dieser Datei
+vorkommen.** Neues Feld in der App und Skill vergessen → der Test schlägt fehl.
+Absichtlich undokumentierte Felder gehören mit Begründung in die `EXEMPT`-Liste
+des Tests, nicht stillschweigend übergangen.
+
+Den **Routine-Prompt** kann kein Test erreichen (kein Checkout in der Sandbox).
+Das bleibt Disziplin — und der Grund, warum er hier oben namentlich steht:
+`RemoteTrigger` aus Claude Code, `action: "update"`.
+
 ## Ordner — immer per ID ansprechen
 
 Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
