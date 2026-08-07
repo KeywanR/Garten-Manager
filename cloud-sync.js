@@ -354,6 +354,32 @@
     return changed;
   }
 
+  /* Record in SYNCED state which Drive file holds this photo.
+
+     The upload index lives in localStorage and never leaves this device, so a
+     second device could hold complete photoMeta and still be unable to name the
+     file it wanted: `gmDrivePhotoName` resolves through that local index, or
+     falls back to deriving the extension from the image bytes it does not have.
+     That gap is the only reason the payload had to carry every photo. photoMeta
+     is in TS_MAPS, so stamping the name here makes it travel. */
+  function stampPhotoFile(key, name, id) {
+    const meta = (state.photoMeta || {})[key];
+    if (!meta || (meta.file === name && meta.driveId === id)) return false;
+    meta.file = name; meta.driveId = id;
+    return true;
+  }
+
+  // Photos uploaded before the name was stamped are still in the index; give
+  // them their `file` so they too can leave the payload. Idempotent.
+  function backfillPhotoFiles() {
+    let n = 0;
+    for (const [k, rec] of Object.entries(photoIndex)) {
+      if (rec && rec.name && stampPhotoFile(k, rec.name, rec.id)) n++;
+    }
+    if (n) console.info(`${n} Foto(s) nachträglich mit ihrem Drive-Namen versehen`);
+    return n;
+  }
+
   async function uploadPhotoFile(key, dataUrl) {
     await ensurePhotosFolder();
     const metaDate = ((state.photoMeta || {})[key] || {}).date || '';
@@ -368,6 +394,7 @@
     if (twin) {
       photoIndex[key] = { id: twin.id, fp: dataUrl.length, name: twin.name, alias: true };
       localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+      stampPhotoFile(key, twin.name, twin.id);
       return;
     }
     const blob = dataUrlToBlob(dataUrl);
@@ -406,6 +433,7 @@
     }
     photoIndex[key] = { id: id, fp: dataUrl.length, name: storedName };
     localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+    stampPhotoFile(key, storedName, id);
   }
 
   // A photo is "in Drive" only once an upload of exactly this image data has
@@ -455,6 +483,7 @@
     try {
       await loadPhotos();
       dedupePhotoIndex();   // needs the blobs, so after loadPhotos and before the queue
+      backfillPhotoFiles();
       for (const k of photoUploadQueue()) {
         try { await upload(k, photoCache[k]); }
         catch (e) {
@@ -614,6 +643,9 @@
         if (typeof data !== 'string' || !data.startsWith('data:image/')) continue;
         try { await putPhoto(k, data); } catch (e) { console.warn('Foto-Merge übersprungen', k, e); }
       }
+      // Photos the payload no longer carries live in photos/; fetch them there.
+      try { await fetchMissingPhotos(); }
+      catch (e) { console.warn('Nachladen von Fotos übersprungen:', e); }
       // The photo loop above is add-only, by design: it must never drop an image
       // this device has not seen yet. Deletions therefore have to be applied
       // separately, from the merged photoMeta — otherwise a photo deleted on the
@@ -696,7 +728,9 @@
     // The images are also what the daily diagnosis routine actually opens — the
     // blob is useless to it — so they are the part that must not be starved.
     try { await syncPhotos(); } catch (e) { console.warn('Foto-Sync übersprungen:', e); }
-    const payload = await buildPayload();
+    // false: photos confirmed in photos/ are referenced, not re-encoded. See
+    // gmPhotoSafeToOmit in app.js for exactly what "confirmed" has to mean.
+    const payload = await buildPayload(false);
     await uploadContent(JSON.stringify(payload));
     try { setLastRemoteTime(await remoteModified()); } catch (e) {}
     state.meta.lastCloudPush = Date.now();
@@ -717,6 +751,8 @@
       const st = remote.state || remote;
       state = migrateState(st);
       await restorePhotos(remote.photos || {});
+      try { await fetchMissingPhotos(); }
+      catch (e) { console.warn('Nachladen von Fotos übersprungen:', e); }
       // Same ordering trap as in mergeRemote, and this is the path behind
       // "Aus Cloud laden": the catalogue must be rebuilt from the data we just
       // adopted before cleanupV12 judges which task ids are valid, or it
@@ -767,6 +803,40 @@
       r.readAsDataURL(blob);
     });
     return { dataUrl: dataUrl, id: found[0].id };
+  }
+
+  /* Pull images this device does not have from the photos/ folder.
+
+     This is the other half of leaving photos out of the payload: the bytes no
+     longer arrive with the state, so they have to be fetched on demand. Every
+     photo referenced by merged photoMeta names its Drive file, which is why
+     stampPhotoFile exists.
+
+     Add-only, and tolerant per photo: one unreachable file must not cost the
+     rest of the batch, and anything that fails here is simply retried on the
+     next merge. A photo that cannot be fetched degrades to a missing thumbnail,
+     never to lost data - the metadata, the timeline entry and the Drive file
+     all survive. */
+  async function fetchMissingPhotos() {
+    const meta = state.photoMeta || {};
+    const wanted = Object.entries(meta).filter(([k, m]) => m && m.file && !photoCache[k]);
+    if (!wanted.length) return 0;
+    await ensurePhotosFolder();
+    let n = 0;
+    for (const [k, m] of wanted) {
+      try {
+        const got = await fetchPhotoAsDataUrl(m.file);
+        if (!got) { console.warn('Foto nicht in Drive gefunden:', m.file); continue; }
+        await putPhoto(k, got.dataUrl);
+        photoIndex[k] = { id: got.id, fp: got.dataUrl.length, name: m.file };
+        n++;
+      } catch (e) { console.warn('Foto konnte nicht geladen werden:', m.file, e); }
+    }
+    if (n) {
+      localStorage.setItem(LS_PHOTO_INDEX, JSON.stringify(photoIndex));
+      console.info(`${n} Foto(s) aus Drive nachgeladen`);
+    }
+    return n;
   }
 
   // Read diagnosis files Claude wrote to Drive and merge unapplied entries into
@@ -991,6 +1061,7 @@
     _syncPhotos: syncPhotos, _photoUploadQueue: photoUploadQueue,
     _photoIndex: () => photoIndex, _photosPending: () => photosPending,
     _uploadPhotoFile: uploadPhotoFile, _dedupePhotoIndex: dedupePhotoIndex,
+    _backfillPhotoFiles: backfillPhotoFiles, _fetchMissingPhotos: fetchMissingPhotos,
     _setTestSession: (tok, photosFolder) => {          // tests only
       accessToken = tok; tokenExpiry = Date.now() + 3600e3; photosFolderId = photosFolder;
     } };
