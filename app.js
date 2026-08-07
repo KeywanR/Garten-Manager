@@ -1457,8 +1457,31 @@ async function sha256(text){if(!crypto?.subtle)return '';
   const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
   return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
 
-async function buildPayload(){await loadPhotos();
-  const core={format:'gartenmanager-backup',version:DATA_VERSION,exported:new Date().toISOString(),state:normalizeState(state),photos:photoCache};
+/* May this photo be left OUT of the cloud payload?
+
+   Only when Drive demonstrably holds it: the upload index vouches for exactly
+   these bytes, AND photoMeta names the file. Both halves matter. The index
+   proves the image reached Drive; `file` is what another device needs in order
+   to ask for it, and photoMeta is the only one of the two that syncs.
+
+   Everything short of that travels inside the payload exactly as before. So a
+   photo is always in Drive or in the payload, and there is no moment in which
+   it is in neither. That is what makes dropping the base64 copy safe by
+   construction rather than by timing. */
+function gmPhotoSafeToOmit(key,dataUrl){
+  const m=(state.photoMeta||{})[key];
+  return !!(m&&m.file)&&gmPhotoInDrive(key,dataUrl);
+}
+/* includePhotos defaults to TRUE, so exports and local snapshots stay
+   self-contained — a backup that needs a working Drive connection to restore is
+   not a backup. Only the cloud push passes false: the images are already in
+   photos/ as individual files, and shipping them again base64-encoded is what
+   grew this file past 50 MB and made every sync a multi-minute window in which
+   two devices could conflict. */
+async function buildPayload(includePhotos=true){await loadPhotos();
+  const photos=includePhotos?photoCache
+    :Object.fromEntries(Object.entries(photoCache).filter(([k,d])=>!gmPhotoSafeToOmit(k,d)));
+  const core={format:'gartenmanager-backup',version:DATA_VERSION,exported:new Date().toISOString(),state:normalizeState(state),photos};
   const checksum=await sha256(JSON.stringify(core));return {...core,checksum}}
 
 async function exportData(){
