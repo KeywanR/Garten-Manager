@@ -7,9 +7,11 @@
    API auf, braucht keinen Schlüssel und verursacht keine zusätzlichen Kosten.
 
    Der KI-Bereich zeigt AUSSCHLIESSLICH das, was Claude beigetragen hat:
-   eingegangene Diagnosen (mit Zähler für Ungelesenes) und Pflegeplan-
-   Vorschläge, die auf Bestätigung warten. Sonst verteilen sich die Diagnosen
-   still über die Pflanzenakten und werden nie gelesen.
+   eingegangene Diagnosen (mit Zähler für Ungelesenes) sowie Pflegeplan-
+   Vorschläge und Pflege-Empfehlungen, die auf Bestätigung warten. Sonst
+   verteilen sich die Diagnosen still über die Pflanzenakten und werden nie
+   gelesen — genau das war mit Gieß- und Düngehinweisen passiert, die bis v51
+   ungefragt in die Pflanzenakte geschrieben wurden.
 
    Fotos einer Pflanze zuzuordnen ist KEINE Diagnose, sondern Ablage, und
    gehört deshalb in den Pflanzen-Bereich (renderPlants in app.js). Die
@@ -20,6 +22,12 @@
    plants, today, esc, fmt, healthFor, openPlantFile.
    ========================================================================== */
 (function () {
+
+  /* A proposal says what kind of decision it wants. `advice` is a care
+     recommendation that used to be appended to the plant file unseen; `note`
+     is the run telling you a suggestion could not be applied. */
+  const TYPE_LABEL = { newPlant: 'neue Pflanze', plan: 'Pflegeplan', tasks: 'Pflegeplan',
+                       advice: 'Empfehlung', note: 'Hinweis' };
 
   /* ----------------------------------------------------------- queries ----- */
   const findings = () => (state.observations || []).filter(o => o.type === 'KI-Diagnose');
@@ -95,11 +103,12 @@
         const pl = plant(p.plantId);
         return `<article class="task late"><div>
           <h3>${esc(p.title)}</h3>
-          <div class="meta">${fmt(p.date)}${pl ? ` · ${esc(pl.name)}` : ''} · ${p.type === 'newPlant' ? 'neue Pflanze' : 'Pflegeplan'}</div>
+          <div class="meta">${fmt(p.date)}${pl ? ` · ${esc(pl.name)}` : ''} · ${TYPE_LABEL[p.type] || 'Vorschlag'}</div>
           ${p.detail ? `<div class="note" style="white-space:pre-line">${esc(p.detail)}</div>` : ''}
         </div><div class="actions">
-          <button class="btn primary" onclick="confirmProposal('${p.id}')">Bestätigen</button>
+          <button class="btn primary" onclick="confirmProposal('${p.id}')">${p.type === 'note' ? 'Verstanden' : 'Bestätigen'}</button>
           ${p.type === 'newPlant' && pl ? `<button class="btn soft" onclick="openPlantFile('${p.plantId}')">Bearbeiten</button>` : ''}
+          ${p.type === 'note' ? '' : `<button class="btn soft" onclick="commentProposal('${p.id}')">Anmerken</button>`}
           <button class="btn" onclick="rejectProposal('${p.id}')">Ablehnen</button>
         </div></article>`;
       }).join('')}</div>` : '';

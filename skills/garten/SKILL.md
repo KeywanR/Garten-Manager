@@ -13,6 +13,27 @@ der Morgenlauf schon gesehen hat — und umgekehrt.
 nicht, sofort abbrechen und den Nutzer bitten, ihn in den Einstellungen zu
 verbinden — niemals raten oder mit Platzhalterdaten weiterarbeiten.
 
+## Ein Lauf, eine Session
+
+Du erledigst alles selbst, in dieser einen Session: keine Subagenten, keine
+Task-Delegation, keine Hintergrundarbeit, kein `ScheduleWakeup`, kein „ich melde
+mich, sobald der Agent fertig ist". Die Session endet, sobald du antwortest -
+was du abgegeben hast, wird nie fertig, und der Lauf gilt als sauber beendet,
+obwohl nichts geschrieben wurde. Genau daran sind die Läufe vom 8. August
+gescheitert: die Akte war groß, der Lauf hat delegiert, die Routine meldete
+"Completed" ohne Bericht und ohne Diagnosedatei.
+
+Wird es zu viel, **kürze den Umfang, statt zu verschieben** - in dieser
+Reihenfolge:
+
+1. Abschnitt 4b zuerst. Eine unbeantwortete Frage des Nutzers ist der Fehler,
+   der sofort auffällt; ein nicht ausgewertetes Foto wartet bis morgen.
+2. Dann Fotos, neueste zuerst - notfalls vier statt zwölf.
+3. Was du ausgelassen hast, kommt in den Bericht.
+
+Ein ehrlich unvollständiger Lauf ist brauchbar. Ein Lauf, der „läuft noch"
+meldet und nie zurückkommt, ist es nicht.
+
 **Wartung:** Diese Datei und der Prompt der täglichen Routine beschreiben
 denselben Ablauf und teilen sich dasselbe Gedächtnis. Änderungen hier immer auch
 dort nachziehen — driften die beiden auseinander (etwa beim Statuswert oder bei
@@ -32,6 +53,31 @@ gekostet hat: die claude.ai-Oberfläche zeigt diese Routinen schlicht nicht an.
 Die Routine läuft in einer Cloud-Sandbox **ohne Git-Checkout und ohne Zugriff
 auf diese Skill** — ihr Prompt muss den ganzen Ablauf selbst enthalten. Ein
 schlanker „nutze die Skill garten"-Prompt funktioniert dort nicht.
+
+### Stehende Regel: drei Kopien, eine Änderung
+
+Dasselbe Protokoll steht an drei Stellen, und nur eine davon läuft wirklich:
+
+| | wo | ausführbar |
+| --- | --- | --- |
+| App | `app.js` (`applyKiDiagnosis`), `cloud-sync.js` | ja |
+| Skill | diese Datei, auch in claude.ai installiert | nein |
+| Routine | Prompt von `trig_01WGicrr1NgzQ11gYRMcxT6w` | nein |
+
+**Wer die App ändert, ändert im selben Zug die Skill und den Routine-Prompt.**
+Nicht „später" — die Erfahrung mit `APP_BUILD` und `CACHE` war eindeutig: ein
+Kommentar, der zum Gleichziehen auffordert, wird zweimal hintereinander
+überlesen. Ein Kommentar ist keine Prüfung.
+
+Deshalb prüft `test-photo-identity.js` die eine Hälfte, die prüfbar ist: **jedes
+Feld, das `applyKiDiagnosis` aus einem Inbox-Eintrag liest, muss in dieser Datei
+vorkommen.** Neues Feld in der App und Skill vergessen → der Test schlägt fehl.
+Absichtlich undokumentierte Felder gehören mit Begründung in die `EXEMPT`-Liste
+des Tests, nicht stillschweigend übergangen.
+
+Den **Routine-Prompt** kann kein Test erreichen (kein Checkout in der Sandbox).
+Das bleibt Disziplin — und der Grund, warum er hier oben namentlich steht:
+`RemoteTrigger` aus Claude Code, `action: "update"`.
 
 ## Ordner — immer per ID ansprechen
 
@@ -54,7 +100,11 @@ Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
   verglichen. `userEdited.what` sagt dir, *was* beigetragen wurde; `lastKiReview`
   ist reine Information.
 - `unassignedPhotos[]` — importierte Fotos ohne Pflanze
-- `kiProposals[]` — frühere Vorschläge mit `status`
+- `kiProposals[]` — frühere Vorschläge mit `status` (`pending`, `confirmed`,
+  `rejected`, `commented`) und `comment`. **Ein Vorschlag mit `comment` ist eine
+  Antwort des Nutzers an dich.** Behandle sie wie eine Frage in „Neue
+  Beobachtung": lies sie, geh in `observation` darauf ein, und stell denselben
+  Vorschlag nur dann erneut, wenn die Anmerkung genau darum bittet
 - `photosPendingUpload` — Bilder, die die App hat, die aber **noch nicht in
   Drive** liegen. Sie stehen absichtlich in keiner Liste; du kannst sie nicht
   öffnen, also wertest du sie nicht aus. Ist die Zahl > 0, im Bericht nennen —
@@ -62,6 +112,36 @@ Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
 
 **ZUGEORDNET** = alle `photos[].driveFile` → Pflanzen-id.
 **OFFEN** = alle `unassignedPhotos[].driveFile`.
+
+## 1b. Wetter am Standort
+
+Der Garten steht in **Perchtoldsdorf, Niederösterreich**. Hol einmal pro Lauf mit
+WebFetch genau diese URL — die Koordinaten sind fix, nicht raten, nicht
+geocodieren:
+
+```
+https://api.open-meteo.com/v1/forecast?latitude=48.11935&longitude=16.26607&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,et0_fao_evapotranspiration,wind_speed_10m_max&past_days=7&forecast_days=7&timezone=Europe%2FVienna
+```
+
+Open-Meteo braucht keinen Schlüssel und kostet nichts — das ist der Grund für
+diese Quelle und nicht für eine andere. Die Antwort ist ~1 kB: `daily.time` hat
+14 Tage, die ersten 7 sind Vergangenheit, die letzten 7 Prognose.
+
+Drei Zahlen ausrechnen:
+
+- **WASSERBILANZ_7T** = Regen der letzten 7 Tage minus `et0_fao_evapotranspiration`
+  derselben Tage. Negativ heißt Defizit.
+- **REGEN_PROGNOSE** = Regensumme der nächsten 7 Tage.
+- **HITZETAGE** = Tage mit `temperature_2m_max` ≥ 30 °C, je Fenster.
+- Ab Oktober zusätzlich **FROSTRISIKO** = tiefster `temperature_2m_min` der
+  Prognose; ≤ 3 °C ist relevant.
+
+Warum ET0 und nicht bloß Regen: 20 mm in einer 39-Grad-Woche sind nichts,
+dieselben 20 mm im kühlen Oktober sind viel. Erst Regen **minus** Verdunstung
+sagt, ob der Boden trockener oder feuchter geworden ist.
+
+Schlägt der Abruf fehl, eine Zeile in den Bericht („Wetterabruf fehlgeschlagen")
+und normal weiterarbeiten. Ein fehlendes Wetter darf den Lauf **nie** abbrechen.
 
 ## 2. Was schon ausgewertet ist
 
@@ -110,6 +190,20 @@ Jedes neue Foto ansehen. Hat die Pflanze in `photos[]` ein älteres Bild, auch d
 verändert hat: hat sich die Vergilbung ausgebreitet, gibt es neue Triebe, hat die
 Behandlung angeschlagen. Nicht nur „Zustand heute", sondern „besser oder
 schlechter als beim letzten Mal".
+
+Zieh das Wetter aus 1b heran, um zu erklären, **warum** etwas so aussieht:
+
+- Schlappe oder eingerollte Blätter bei negativer Wasserbilanz und Hitzetagen
+  sind meist Trockenstress oder Mittagswelke, nicht Krankheit — gießen und
+  schatten, nicht behandeln.
+- Braune, trockene Blattränder nach einer Hitzewoche sind Verbrennung, kein Pilz.
+- Gelbe untere Blätter bei stark positiver Bilanz deuten eher auf Staunässe.
+- Das **Foto** entscheidet, was die Pflanze zeigt; das **Wetter** erklärt es.
+  Widersprechen sich beide, gilt das Foto — und sag den Widerspruch.
+
+Kübel- und Topfpflanzen trocknen um ein Vielfaches schneller aus als Beete, und
+der größte Teil dieses Gartens steht im Kübel. Nenn sie getrennt, wenn du zum
+Gießen rätst.
 
 `profile` und `timeline` berücksichtigen. Vom Nutzer bearbeiteter Text
 (`profile.updated` gesetzt) ist maßgeblich — nicht widersprechen, keine
@@ -208,6 +302,21 @@ Prüfe bei jedem Vorschlag ausdrücklich den Bestand in `careSchedule`:
   daneben.
 - Nur was wirklich fehlt, kommt in `addTasks`.
 
+**Wetter und Pflegeplan.** Seit v52 ist jede Gieß-, Dünge- und
+Behandlungs-Empfehlung ein Vorschlag, den der Nutzer im KI-Bereich bestätigt,
+kommentiert oder ablehnt — sie verschwindet nicht mehr ungefragt in der
+Pflanzenakte. Weil er jetzt jede Änderung sieht, darf das Wetter den Pflegeplan
+auch tatsächlich ändern: rechtfertigt die Wasserbilanz der letzten 7 Tage oder
+die Zahl der Hitzetage ein anderes Gießintervall, schlag es vor. Der alte
+Vorbehalt („nur bei Saisonwechsel oder Frosteinbruch") gilt nicht mehr.
+
+An seine Stelle tritt eine Obergrenze: **höchstens ein wetterbedingter
+`proposePlan` je Pflanze in sieben Tagen.** Sieh in `kiProposals` nach, wann du
+für diese Pflanze zuletzt einen gestellt hast. Eine Hitzewelle erzeugt so einen
+Vorschlag und nicht sieben — und das ist weiterhin der Punkt: ein Lauf, der
+jeden Morgen das Gießintervall ändern will, erzieht den Nutzer dazu, Vorschläge
+ungelesen wegzuklicken.
+
 Der Nutzer bestätigt den Plan in der App als **eine** Entscheidung; erst dann
 greift er. Bereits `rejected`-Vorschläge aus `kiProposals` nicht wiederholen,
 und nichts vorschlagen, was in `suppressedTasks` bewusst ausgesetzt wurde.
@@ -232,6 +341,10 @@ trotzdem falsch:
   **stopp**. Das ist ein ersetztes oder gelöschtes Bild.
 - Du hast eine Frage des Nutzers gelesen und willst stattdessen nur den
   Pflegeplan prüfen — **stopp**. Die Frage zuerst, in `observation`.
+- Du willst wegen des Wetters das Gießintervall ändern, obwohl es nur ein warmer
+  Tag war — **stopp**. Das gehört in den Bericht.
+- Du willst allein wegen des Wetters eine Diagnosedatei anlegen, obwohl es weder
+  neue Fotos noch Eingaben gibt — **stopp**. Nur Bericht.
 - Du willst einen Eintrag schreiben, der im Kern sagt „dasselbe Bild unter
   anderem Dateinamen" — **stopp**. Still überspringen, im Bericht zählen.
 - Du willst einen eigenen Statustext formulieren — **stopp**. Nur die vier
@@ -244,6 +357,15 @@ trotzdem falsch:
 - Du willst `addPlant` schreiben, ohne die bestehenden Pflanzen durchgesehen zu
   haben — **stopp**. Eine doppelt angelegte Pflanze muss der Nutzer von Hand
   wieder löschen.
+- Du willst die Arbeit an einen Agenten delegieren, im Hintergrund weiterlaufen
+  lassen oder auf eine spätere Fortsetzung warten — **stopp**. Selbst machen,
+  jetzt, notfalls mit weniger Fotos. Die Session endet mit deiner Antwort.
+- Du willst eine Gieß- oder Düngeanweisung in `notes` oder `diseases` schreiben,
+  weil sie dort ohne Bestätigung durchgeht — **stopp**. Anweisungen gehören in
+  `watering`, `fertilizing` oder `treatments` und damit vor den Nutzer.
+- Du hast einen Vorschlag mit `comment` gelesen und willst ihn übergehen —
+  **stopp**. Der Nutzer hat dir geantwortet; das ist dieselbe Verbindlichkeit
+  wie eine Frage in „Neue Beobachtung".
 
 ## 7. Schreiben
 
@@ -302,10 +424,25 @@ einsortiert wird — nicht der Zeitpunkt deines Laufs. Bei einem Foto-Eintrag al
 das Aufnahmedatum des Fotos (steht als `date` neben dem `driveFile`), damit der
 Verlauf chronologisch bleibt. Bei einem Korrektur-Eintrag das heutige Datum.
 
+**Handlungsanweisung oder Beobachtung — die App behandelt beides verschieden.**
+Seit v52 teilt sie die acht Felder in zwei Gruppen:
+
+| Gruppe | Felder | Was passiert |
+| --- | --- | --- |
+| Handlungsanweisung | `watering`, `fertilizing`, `treatments` | wird **nicht** angehängt, sondern erscheint als **Empfehlung zur Bestätigung** im KI-Bereich; erst ein Klick des Nutzers schreibt sie in die Akte |
+| Beobachtung | `location`, `planted`, `diseases`, `harvest`, `notes` | wird wie bisher als Zeile `[KI <date>] <text>` angehängt |
+
+Bis v51 landete beides ungefragt in der Pflanzenakte. Gieß- und Düngehinweise
+standen damit genau dort, wo man sie nicht bestätigen und nicht abarbeiten kann.
+Schreib die drei Anweisungsfelder deshalb als klare, ausführbare Sätze mit Menge
+und Rhythmus — der Nutzer entscheidet darüber mit einem Knopfdruck, und ein
+vager Satz ist als Entscheidungsvorlage wertlos.
+
 **Zwei verschiedene Dinge heißen `profile`.** In `plants[]` ist `profile` die
 gespeicherte Pflanzenakte, die du liest. Im Eintrag ist `profile` etwas anderes:
-eine **Ergänzung**, die die App als eigene Zeile `[KI <date>] <text>` an das
-jeweilige Feld **anhängt** — sie ersetzt nichts. Schreib also nur, was neu
+eine **Ergänzung**, die die App an das jeweilige Feld hängt (bei den
+Beobachtungsfeldern sofort, bei den Anweisungsfeldern nach Bestätigung) — sie
+ersetzt nichts. Schreib also nur, was neu
 hinzukommt, formuliere es als eigenständigen Satz, und wiederhole nicht, was in
 der Akte schon steht: sonst wächst dieselbe Aussage mit jedem Lauf um eine
 Zeile. Setzen kannst du nur die acht genannten Felder; `profile.updated` gehört
@@ -334,8 +471,11 @@ erfordern.
 
 ## Bericht
 
-Höchstens sieben Zeilen. Zuerst und deutlich: **welche Fragen des Nutzers du
-beantwortet hast** (oder „keine offenen Fragen"), dann **welche neuen Pflanzen
+Höchstens acht Zeilen. Zuerst und deutlich: **welche Fragen des Nutzers du
+beantwortet hast** (oder „keine offenen Fragen"). Dann eine **Wetterzeile**:
+Wasserbilanz der letzten 7 Tage in mm, Regen in der Prognose, Hitzetage, ab
+Oktober Frostrisiko — und was das fürs Gießen heißt, Kübel getrennt genannt.
+Dann **welche neuen Pflanzen
 angelegt wurden** (oder „keine"). Dann Anzahl ausgewerteter Fotos, betroffene
 Pflanzen, Veränderungen aus dem Bildvergleich. Dann: welche Pflanzen wegen
 einer Nutzer-Eingabe neu geprüft wurden und was das für ihren Pflegeplan heißt.

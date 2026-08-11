@@ -358,6 +358,57 @@ const img = (ch, n) => 'data:image/jpeg;base64,' + ch.repeat(n);
       'APP_BUILD=' + (app && app[1]) + ' vs CACHE=' + (sw && sw[1]));
   }
 
+  /* ============ the skill documents the protocol the app implements ======= */
+  section('SKILL.md keeps step with the inbox protocol in app.js');
+  {
+    /* The app, the claude.ai skill and the cloud routine prompt all describe the
+       same inbox contract, and only the app is executable. The routine runs in a
+       sandbox with no checkout, so it cannot read the skill: the three are kept
+       in step by hand, and by hand means eventually not at all.
+
+       This asserts the weaker but checkable half - every entry field
+       applyKiDiagnosis reads must be mentioned in SKILL.md. Add a field to the
+       app and forget the skill, and this fails. It cannot see the routine
+       prompt; updating that stays a discipline, which is why the skill's
+       Wartung section names it.
+
+       A field may be left undocumented only by listing it here WITH a reason. */
+    const EXEMPT = {
+      proposeTasks: 'legacy additions-only alias, still honoured for old inbox ' +
+        'files but deliberately not offered to the routine, which must use ' +
+        'proposePlan so add, change and remove arrive as one decision',
+    };
+
+    const appSrc = fs.readFileSync(APP_SRC, 'utf8');
+    const skill = fs.readFileSync(path.join(__dirname, 'skills', 'garten', 'SKILL.md'), 'utf8');
+
+    const i = appSrc.indexOf('async function applyKiDiagnosis');
+    check('applyKiDiagnosis located in app.js', i >= 0);
+    let depth = 0, started = false, body = '';
+    for (let j = i; j >= 0 && j < appSrc.length; j++) {
+      if (appSrc[j] === '{') { depth++; started = true; }
+      else if (appSrc[j] === '}') { depth--; if (started && depth === 0) { body = appSrc.slice(i, j + 1); break; } }
+    }
+    // Strip comments first, or prose like "e.g." is read as a protocol field.
+    const code = body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+    const fields = [...new Set([...code.matchAll(/\be\.([a-zA-Z][a-zA-Z0-9]*)/g)].map(m => m[1]))].sort();
+
+    check('protocol fields extracted', fields.length > 5, fields.join(','));
+    const undocumented = fields.filter(f => !skill.includes(f) && !(f in EXEMPT));
+    check('every entry field the app reads is documented in SKILL.md',
+      undocumented.length === 0,
+      undocumented.length
+        ? 'undocumented: ' + undocumented.join(', ') +
+          '\n        Add them to SKILL.md (and to the routine prompt at ' +
+          'claude.ai/code/routines), or list them in EXEMPT with a reason.'
+        : '');
+
+    // An exemption for a field the app no longer reads is stale bookkeeping.
+    const staleExempt = Object.keys(EXEMPT).filter(f => !fields.includes(f));
+    check('no stale exemptions', staleExempt.length === 0,
+      staleExempt.length ? 'no longer read by the app: ' + staleExempt.join(', ') : '');
+  }
+
   console.log('\n' + (failures ? failures + ' FAILURE(S)' : 'all checks passed'));
   process.exit(failures ? 1 : 0);
 })();
