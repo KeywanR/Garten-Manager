@@ -242,6 +242,13 @@ a{color:var(--leaf)}
           <p class="meta" id="dossierInfo"></p>
         </div>
         <div class="panel">
+          <h3>🧪 Meine Dünger</h3>
+          <p>Was tatsächlich im Schuppen steht. Die KI empfiehlt nur, was hier gelistet ist – mit Dosierung –, oder schlägt einen Zukauf vor. Ein Foto der Packung hilft ihr, NPK und Dosierung selbst abzulesen.</p>
+          <div id="fertList"></div>
+          <button class="btn primary" onclick="addFertilizer()">Dünger hinzufügen</button>
+          <button class="btn soft" onclick="addNettleBrew()">🌿 Brennnesseljauche ansetzen</button>
+        </div>
+        <div class="panel">
           <h3>☁️ Google Drive Sync</h3>
           <p>Speichert alle Daten automatisch in einem Ordner „Garten-Manager“ in deinem Google Drive – sichtbar auch am PC. Änderungen am iPad werden nach kurzer Zeit hochgeladen.</p>
           <button class="btn primary" id="cloudConnectBtn" onclick="cloudDisconnect()">Mit Google Drive verbinden</button>

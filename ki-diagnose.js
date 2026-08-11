@@ -27,7 +27,7 @@
      recommendation that used to be appended to the plant file unseen; `note`
      is the run telling you a suggestion could not be applied. */
   const TYPE_LABEL = { newPlant: 'neue Pflanze', plan: 'Pflegeplan', tasks: 'Pflegeplan',
-                       advice: 'Empfehlung', note: 'Hinweis' };
+                       advice: 'Empfehlung', note: 'Hinweis', purchase: 'Zukauf' };
 
   /* ----------------------------------------------------------- queries ----- */
   const findings = () => (state.observations || []).filter(o => o.type === 'KI-Diagnose');
@@ -35,7 +35,7 @@
   // Photos imported from the gallery arrive without a plant. They stay here
   // until assigned — an unassigned photo is invisible in every plant file.
   const unassigned = () => Object.entries(state.photoMeta || {})
-    .filter(([k, m]) => m && !m.plantId && !m.ignored && photoCache[k])
+    .filter(([k, m]) => m && !m.plantId && !m.ignored && m.kind !== 'duenger' && photoCache[k])
     .sort((a, b) => (b[1].date || '').localeCompare(a[1].date || ''));
 
   /* -------------------------------------------------------- read state ----- */
@@ -106,7 +106,7 @@
           <div class="meta">${fmt(p.date)}${pl ? ` · ${esc(pl.name)}` : ''} · ${TYPE_LABEL[p.type] || 'Vorschlag'}</div>
           ${p.detail ? `<div class="note" style="white-space:pre-line">${esc(p.detail)}</div>` : ''}
         </div><div class="actions">
-          <button class="btn primary" onclick="confirmProposal('${p.id}')">${p.type === 'note' ? 'Verstanden' : 'Bestätigen'}</button>
+          <button class="btn primary" onclick="confirmProposal('${p.id}')">${p.type === 'note' ? 'Verstanden' : p.type === 'purchase' ? 'Vormerken' : 'Bestätigen'}</button>
           ${p.type === 'newPlant' && pl ? `<button class="btn soft" onclick="openPlantFile('${p.plantId}')">Bearbeiten</button>` : ''}
           ${p.type === 'note' ? '' : `<button class="btn soft" onclick="commentProposal('${p.id}')">Anmerken</button>`}
           <button class="btn" onclick="rejectProposal('${p.id}')">Ablehnen</button>
