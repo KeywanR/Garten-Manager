@@ -558,7 +558,7 @@
      let the local side win — which is how two devices ended up holding
      different state indefinitely, each convinced it was right. */
   const TS_MAPS = ['tasks', 'health', 'photoMeta', 'suppressedTasks', 'plantEdits', 'kiReviewed'];
-  const TS_LISTS = ['customPlants', 'customTasks', 'kiProposals', 'observations'];
+  const TS_LISTS = ['customPlants', 'customTasks', 'kiProposals', 'observations', 'fertilizers'];
   const tsOf = r => (r && r.ts) || '';
 
   function mergeStates(local, remote) {

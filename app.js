@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v52';
+const APP_BUILD='v53';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -270,7 +270,7 @@ const isDateString=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Numbe
    undone by the other device's surviving copy. */
 const nowTs=()=>new Date().toISOString();
 const TS_MAPS=['tasks','health','profiles','photoMeta','suppressedTasks','plantEdits','kiReviewed'];
-const TS_LISTS=['customPlants','customTasks','kiProposals','observations'];
+const TS_LISTS=['customPlants','customTasks','kiProposals','observations','fertilizers'];
 let tsSnapshot=null;
 
 const tsBody=v=>{if(!v||typeof v!=='object')return JSON.stringify(v);
@@ -377,7 +377,7 @@ function purgeBadTaskTombstones(){
   save(false);
 }
 
-function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiApplied:{},kiProposals:[],suppressedTasks:{},plantEdits:{},kiReviewed:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
+function defaultState(){return {tasks:{},history:[],health:{},profiles:{},observations:[],photoMeta:{},customPlants:[],customTasks:[],kiRead:{},kiApplied:{},kiProposals:[],fertilizers:[],suppressedTasks:{},plantEdits:{},kiReviewed:{},tombstones:{},showAllSeasons:false,migrated:false,dataVersion:DATA_VERSION,meta:{created:new Date().toISOString(),updated:new Date().toISOString()}}}
 
 function normalizeState(raw){
   const base=defaultState(), x=(raw&&typeof raw==='object')?raw:{};
@@ -407,6 +407,7 @@ function normalizeState(raw){
   out.kiRead=(x.kiRead&&typeof x.kiRead==='object'&&!Array.isArray(x.kiRead))?x.kiRead:{};
   out.kiApplied=(x.kiApplied&&typeof x.kiApplied==='object'&&!Array.isArray(x.kiApplied))?x.kiApplied:{};
   out.kiProposals=Array.isArray(x.kiProposals)?x.kiProposals:[];
+  out.fertilizers=Array.isArray(x.fertilizers)?x.fertilizers:[];
   out.suppressedTasks=(x.suppressedTasks&&typeof x.suppressedTasks==='object'&&!Array.isArray(x.suppressedTasks))?x.suppressedTasks:{};
   out.plantEdits=(x.plantEdits&&typeof x.plantEdits==='object'&&!Array.isArray(x.plantEdits))?x.plantEdits:{};
   out.kiReviewed=(x.kiReviewed&&typeof x.kiReviewed==='object'&&!Array.isArray(x.kiReviewed))?x.kiReviewed:{};
@@ -508,6 +509,45 @@ function complete(id){
   save();renderAll();
   toast(`${d.title} erledigt – wieder am ${fmt(next)}${fert?` · ${fert.name}`:''}`);
 }
+/* Ticking a task off is a different act from agreeing with a recommendation,
+   and the two must never be merged: confirming a proposal over breakfast would
+   reset the interval as though the plant had been fed, the reminder would
+   vanish, and the plant would wait a full cycle. Here the plant HAS been fed.
+
+   So this is the one moment where two things are worth capturing: WHICH product
+   actually went on — often not the one suggested — and a remark or question.
+   The remark is filed as an observation, which stamps the plant for
+   re-assessment, so the daily run reads it and answers the next morning rather
+   than repeating the same advice into a void. */
+function completeWithNote(id){
+  const d=defs.find(x=>x.id===id);if(!d)return;
+  const isFeed=d.id.endsWith(':duengen');
+  let used='';
+  if(isFeed){
+    const list=fertilizers().filter(f=>f.available!==false);
+    if(list.length){
+      const menu=list.map((f,i)=>`${i+1} = ${f.name}`).join('\n');
+      const pick=(prompt(`Welchen Dünger hast du verwendet?\n${menu}\n0 = anderer oder keiner\n\nNummer (oder Name) eingeben:`,'1')||'').trim();
+      const idx=Number(pick);
+      if(idx>=1&&idx<=list.length)used=list[idx-1].name;
+      else if(pick&&pick!=='0'&&!Number.isFinite(idx))used=pick;
+    }
+  }
+  const note=(prompt(isFeed
+    ? 'Anmerkung für die KI (optional) – z. B. warum ein anderer Dünger, eine Beobachtung oder eine Frage:'
+    : 'Anmerkung für die KI (optional) – Beobachtung oder Frage:')||'').trim();
+  const date=today(),next=add(date,d.interval),fallback=fertilizerInfo(d,date);
+  state.tasks[id]={last:date,next};
+  state.history.unshift({date,taskId:id,plantId:d.plantId,title:d.title,
+    fertilizer:used||fallback?.name||'',note});
+  /* addObservation saves, re-renders and stamps the plant itself. Without a
+     note there is nothing for the run to answer, so no observation is made and
+     the tick stays a plain completion. */
+  if(note)addObservation(d.plantId,isFeed?'Düngung':'Maßnahme',
+    `${d.title} erledigt${used?` – verwendet: ${used}`:''}: ${note}`);
+  save();renderAll();
+  toast(`${d.title} erledigt${used?` · ${used}`:''}${note?' · Anmerkung geht an die KI':''}`);
+}
 function setTaskDate(id,date){if(!date)return;const d=defs.find(x=>x.id===id);
   state.tasks[id]={last:date,next:add(date,d.interval)};save();renderAll();toast('Termin aktualisiert')}
 function clearTask(id){delete state.tasks[id];save();renderAll()}
@@ -554,19 +594,21 @@ function taskHTML(d){
   const p=plant(d.plantId),s=taskState(d.id),started=!!state.tasks[d.id];
   const cls=started?classify(d):'new';
   const fert=fertilizerInfo(d,nextFor(d)||today());
-  const fertHTML=fert?`<div class="fert"><b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}</div>`:'';
+  const fertHTML=fert?`<div class="fert"><b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}${fertilizers().filter(f=>f.available!==false).length?`<br><span>Im Bestand: ${fertilizers().filter(f=>f.available!==false).map(f=>esc(f.name)).join(', ')}</span>`:''}</div>`:'';
   const due=started?'':initialDueFor(d);
   const dueTxt=started?'':(diff(due)===0?'heute':fmt(due));
   const cycleTxt=d.interval>=365?'in einem Jahr':`in ${d.interval} Tagen`;
   const meta=started
     ? `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${statusText(d)}${nextFor(d)?` · fällig ${fmt(nextFor(d))}`:''}${s.last?` · zuletzt ${fmt(s.last)}`:''}`
     : `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${d.optional?'optional · ':''}noch nicht aktiv`;
-  const startHint=started?'':`<div class="hint">„✓ Gerade gemacht“: du hast das eben erledigt – nächster Termin ${cycleTxt}.<br>„Einplanen“: nur auf die Aufgabenliste setzen – fällig ${dueTxt}.</div>`;
+  const startHint=started?'':`<div class="hint">„✓ Gerade gemacht“: du hast das eben erledigt – nächster Termin ${cycleTxt}.<br>„✓ mit Notiz“: dasselbe, aber du hältst fest, welchen Dünger du wirklich genommen hast, oder stellst eine Frage – die KI antwortet am nächsten Morgen.<br>„Einplanen“: nur auf die Aufgabenliste setzen – fällig ${dueTxt}.</div>`;
   const actions=started
     ? `<input aria-label="Erledigt am" title="Datum der letzten Erledigung setzen" type="date" value="${s.last||''}" onchange="setTaskDate('${d.id}',this.value)">
        <button class="btn primary" onclick="complete('${d.id}')">✓ Erledigt</button>
+       <button class="btn soft" onclick="completeWithNote('${d.id}')">✓ mit Notiz</button>
        ${s.last?`<button class="btn" onclick="clearTask('${d.id}')">Zurücksetzen</button>`:''}`
     : `<button class="btn primary" onclick="complete('${d.id}')">✓ Gerade gemacht</button>
+       <button class="btn soft" onclick="completeWithNote('${d.id}')">✓ mit Notiz</button>
        <button class="btn soft" onclick="startTask('${d.id}')">Einplanen (fällig ${dueTxt})</button>`;
   return `<article class="task ${cls}"><div>
     <h3>${esc(d.title)}</h3>
@@ -877,6 +919,16 @@ async function applyKiDiagnosis(e){
         detail:(plan.reason?[plan.reason,'']:[]).concat(wanted).join('\n'),date:d}))changed=true;
     }
   }
+  /* The run may conclude that nothing in the shed fits — a wrong-ratio feed in
+     August is worse than none. That is a legitimate answer and has to be
+     visible: buried in prose it reads as a vague suggestion nobody acts on. */
+  if(e.proposePurchase&&e.proposePurchase.what){
+    const pp=e.proposePurchase;
+    if(addProposal({id:`${e.id||'ki'}-kauf`,plantId:e.plantId||'',type:'purchase',
+      title:`Zukaufen: ${pp.what}`,
+      detail:[pp.reason||'',pp.dosage?`Vorgeschlagene Dosierung: ${pp.dosage}`:''].filter(Boolean).join('\n'),
+      date:d}))changed=true;
+  }
   // assignPhoto: adopt a photo the app already holds but has not filed under any
   // plant (imported via "Fotos importieren"). The inbox could previously only
   // create plants or deliver new images — never re-home an orphan.
@@ -936,6 +988,125 @@ async function applyKiDiagnosis(e){
   return changed;
 }
 
+/* ------------------------------------------------------ Dünger-Bestand ------ */
+/* What is actually in the shed. The daily run may only recommend feeding with
+   something on this list, or say plainly that nothing here fits and propose a
+   purchase. A recommendation naming a product the user does not own is advice
+   they cannot act on, and „düngen" with no product named is not advice at all.
+
+   Deliberately NOT tracked: how much is left. Keeping that honest would mean
+   logging every single feeding, which is a much larger commitment than the
+   feature is worth — and a stock figure nobody maintains is worse than none,
+   because the run would trust it. */
+const FERT_FORMS=['flüssig','Granulat','Stäbchen','Kompost','sonstiges'];
+const fertilizers=()=>state.fertilizers||[];
+/* Keyed by the fertilizer, not by a plant. The `kind` marker on photoMeta is
+   what keeps these out of „Fotos ohne Pflanze": without it every pack shot
+   would sit in the inbox asking which plant it belongs to, for ever. */
+const fertPhotoKey=id=>`duenger|${id}`;
+
+async function addFertilizer(){
+  const name=(prompt('Name des Düngers (z. B. „Compo Blaukorn"):')||'').trim();
+  if(!name)return;
+  const id=`f-${slugify(name)}-${Date.now().toString(36)}`;
+  const form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,'flüssig')||'').trim();
+  const npk=(prompt('NPK laut Packung (optional, z. B. „14-7-14"):')||'').trim();
+  const dosage=(prompt('Dosierung laut Packung (optional, z. B. „10 ml auf 5 l Wasser"):')||'').trim();
+  state.fertilizers=fertilizers().concat([{id,name,form,npk,dosage,note:'',
+    selfmade:false,available:true,outSince:''}]);
+  save();renderSettings();
+  if(confirm('Foto von der Packung aufnehmen? Die KI liest Dosierung und NPK davon ab.'))
+    await setFertilizerPhoto(id);
+  else toast('Dünger gespeichert');
+}
+
+/* The pack photo is the useful part: what is typed in is a summary, what is
+   printed on the pack is the source. Stored like any other photo so it syncs to
+   Drive on the normal path and the run can actually open it. */
+async function setFertilizerPhoto(id){
+  const f=fertilizers().find(x=>x.id===id);if(!f)return;
+  const file=await pickImage(true);
+  if(!file||!file.type.startsWith('image/'))return;
+  const data=await resizePhoto(file),key=fertPhotoKey(id);
+  await putPhoto(key,data);
+  state.photoMeta[key]={plantId:'',date:today(),caption:`Dünger: ${f.name}`,cover:false,kind:'duenger'};
+  save();renderSettings();toast('Foto gespeichert – wird beim nächsten Sync hochgeladen');
+}
+
+/* Brennnesseljauche is not a product, it is a bucket in the corner — and the
+   built-in `fertilizerPlans` table leans on it for most vegetables before June,
+   so it belongs in the shed list as a first-class entry rather than something
+   the user has to describe from scratch. It carries no NPK: what matters is the
+   dilution and the date it was set up. */
+async function addNettleBrew(){
+  if(fertilizers().some(f=>f.selfmade&&/brennnessel/i.test(f.name)))
+    return toast('Brennnesseljauche steht schon im Bestand');
+  const raw=(prompt('Wann angesetzt? (JJJJ-MM-TT, leer = heute)',today())||'').trim();
+  const started=isDateString(raw)?raw:today();
+  state.fertilizers=fertilizers().concat([{
+    id:`f-brennnesseljauche-${Date.now().toString(36)}`,
+    name:'Brennnesseljauche (selbst angesetzt)',form:'flüssig',npk:'',
+    dosage:'1:10 bis 1:20 verdünnt, je nach Pflanze',note:`angesetzt ${started}`,
+    selfmade:true,available:true,outSince:''}]);
+  save();renderSettings();toast('Brennnesseljauche im Bestand');
+}
+
+/* „Aufgebraucht" is a switch, not a quantity. Tracking how much is left would
+   mean logging every single feeding, which was explicitly ruled out — but
+   whether something is available at all changes the advice completely, and the
+   run has no other way to find out. For a home-brewed feed it changes it twice
+   over: it cannot simply be bought, a new batch has to be set up and steeped
+   for weeks, so running out is a reason to act today, not a footnote. */
+function toggleFertilizerStock(id){
+  const f=fertilizers().find(x=>x.id===id);if(!f)return;
+  const wasOut=f.available===false;
+  f.available=wasOut;
+  f.outSince=wasOut?'':today();
+  save();renderSettings();
+  toast(wasOut?`${f.name}: wieder verfügbar`
+      :f.selfmade?`${f.name} aufgebraucht – die KI erinnert ans Neuansetzen und rechnet solange ohne`
+                 :`${f.name} aufgebraucht – die KI schlägt Ersatz oder Zukauf vor`);
+}
+
+function editFertilizer(id){
+  const f=fertilizers().find(x=>x.id===id);if(!f)return;
+  const name=(prompt('Name:',f.name)||'').trim();if(!name)return;
+  f.name=name;
+  f.form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,f.form||'')||'').trim();
+  f.npk=(prompt('NPK laut Packung:',f.npk||'')||'').trim();
+  f.dosage=(prompt('Dosierung laut Packung:',f.dosage||'')||'').trim();
+  save();renderSettings();toast('Dünger aktualisiert');
+}
+
+async function deleteFertilizer(id){
+  const f=fertilizers().find(x=>x.id===id);if(!f)return;
+  if(!confirm(`„${f.name}" aus dem Bestand entfernen?`))return;
+  const key=fertPhotoKey(id);
+  if(photoCache[key]){try{await removePhoto(key)}catch(e){console.warn('Düngerfoto konnte nicht gelöscht werden',e)}}
+  delete state.photoMeta[key];
+  state.fertilizers=fertilizers().filter(x=>x.id!==id);
+  save();renderSettings();toast('Dünger entfernt');
+}
+
+function renderFertilizers(){
+  const box=document.getElementById('fertList');if(!box)return;
+  const list=fertilizers();
+  if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen.</div>`;return}
+  box.innerHTML=`<div class="task-list">${list.map(f=>{
+    const key=fertPhotoKey(f.id),img=photoCache[key],out=f.available===false;
+    const facts=[f.form,f.npk?`NPK ${f.npk}`:'',f.dosage,f.note].filter(Boolean).join(' · ');
+    return `<article class="task ${out?'late':''}"><div>
+      <h3>${esc(f.name)} ${f.selfmade?'<span class="mini">selbst angesetzt</span>':''}${out?'<span class="mini">aufgebraucht</span>':''}</h3>
+      <div class="meta">${out?`aufgebraucht seit ${fmt(f.outSince||today())} – wird nicht mehr empfohlen. `:''}${facts?esc(facts):'keine Angaben von der Packung'}</div>
+      ${img?`<img src="${img}" alt="${esc(f.name)}" style="max-width:120px;border-radius:8px;margin-top:6px">`:''}
+    </div><div class="actions">
+      <button class="btn ${out?'primary':'soft'}" onclick="toggleFertilizerStock('${f.id}')">${out?'Wieder da':'Aufgebraucht'}</button>
+      <button class="btn soft" onclick="setFertilizerPhoto('${f.id}')">${img?'Foto neu':'Foto'}</button>
+      <button class="btn soft" onclick="editFertilizer('${f.id}')">Ändern</button>
+      <button class="btn" onclick="deleteFertilizer('${f.id}')">Entfernen</button>
+    </div></article>`}).join('')}</div>`;
+}
+
 /* ------------------------------------------------------- KI proposals ------- */
 /* A proposal is something the AI suggests but must not do on its own: a new
    care task, or a plant it created from a photo. It sits pending in the KI view
@@ -992,6 +1163,7 @@ async function confirmProposal(id){
   save();renderAll();
   toast(p.type==='advice'?'Bestätigt – in der Pflanzenakte vermerkt'
        :p.type==='note'?'Zur Kenntnis genommen'
+       :p.type==='purchase'?'Vorgemerkt – bleibt im Journal'
        :'Bestätigt – Pflegeplan aktualisiert');
 }
 /* The third answer, next to yes and no. The suggestion leaves the pending list
@@ -1187,6 +1359,8 @@ async function adoptUntrackedPhotos(){
   for(const k of Object.keys(photoCache)){
     if(state.photoMeta[k])continue;
     if(plant(k)){state.photoMeta[k]={plantId:k,date:today(),caption:'Titelbild',cover:true};n++}
+    else if(String(k).startsWith('duenger|')){
+      state.photoMeta[k]={plantId:'',date:today(),caption:'Dünger (wiederhergestellt)',cover:false,kind:'duenger'};n++}
     else{state.photoMeta[k]={plantId:'',date:today(),caption:'Wiederhergestellt',cover:false};n++}
   }
   if(n)console.info(`${n} Foto(s) nachträglich erfasst`);
@@ -1452,6 +1626,7 @@ function renderSettings(){
   if(ii)ii.textContent=state.meta?.lastIntegrityAt?`${state.meta.lastIntegrityOk?'✓ Keine erkennbaren Probleme':'⚠ Probleme gefunden'} · geprüft ${new Date(state.meta.lastIntegrityAt).toLocaleString('de-AT')}`:'Noch nicht geprüft';
   if(di)di.textContent=state.meta?.lastDossierAt?`Letzter KI-Export: ${new Date(state.meta.lastDossierAt).toLocaleString('de-AT')}`:'Noch kein KI-Export';
   if(stgl)stgl.textContent=state.showAllSeasons?'Nur saisonale Aufgaben anzeigen':'Auch außersaisonale anzeigen';
+  renderFertilizers();
   if(window.CloudSync)CloudSync.renderStatus();
   renderBuildInfo();
 }
@@ -1783,7 +1958,7 @@ async function buildDossierPayload(includePhotos){
   // Without these the diagnosis routine cannot see them at all, because the
   // per-plant dossiers group photos by plantId.
   const unassignedPhotos=Object.entries(state.photoMeta||{})
-    .filter(([k,m])=>m&&!m.plantId&&!m.ignored&&gmPhotoInDrive(k,photoCache[k]))
+    .filter(([k,m])=>m&&!m.plantId&&!m.ignored&&m.kind!=='duenger'&&gmPhotoInDrive(k,photoCache[k]))
     .map(([k,m])=>({driveFile:gmDrivePhotoName(k,photoCache[k]),date:m.date||'',caption:m.caption||''}));
   // Images this device holds that have not reached Drive yet. They are absent
   // from the lists above on purpose — the routine cannot open what is not there
@@ -1798,9 +1973,20 @@ async function buildDossierPayload(includePhotos){
   // the app. Without them, "did my confirmations survive the sync?" cannot be
   // answered from Drive at all — which is exactly the question that came up.
   const readMarkers=Object.keys(state.kiRead||{});
+  /* The shed, so a feeding recommendation can name something that exists.
+     `driveFile` is set only once the pack shot has really reached Drive: the run
+     reads the dose off the label, and naming a file it cannot open is worse
+     than naming none, because it looks like evidence that was considered. */
+  const fertilizerList=fertilizers().map(f=>{
+    const k=fertPhotoKey(f.id);
+    return {id:f.id,name:f.name,form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
+      selfmade:!!f.selfmade,available:f.available!==false,outSince:f.outSince||'',
+      driveFile:gmPhotoInDrive(k,photoCache[k])?gmDrivePhotoName(k,photoCache[k]):''};
+  });
   const payload={
     format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),
     appBuild:APP_BUILD,unassignedPhotos,photosPendingUpload,kiProposals:proposals,readMarkers,
+    fertilizers:fertilizerList,
     readme:'Strukturierte Pflanzenakten für die KI-Analyse (Claude/MCP). Jede Pflanze enthält Gesundheitsstatus, Stammdaten, Pflegeplan, chronologischen Verlauf und Fotoreferenzen.'+(includePhotos
       ?' Bilddaten stehen in "photoData" (Base64, Schlüssel = photos[].key).'
       :' Jedes Foto liegt als eigene Bilddatei im Drive-Unterordner "photos/" (Dateiname = photos[].driveFile). Der Ordner ist ein reines Archiv: auch in der App gelöschte Fotos und ersetzte Titelbilder bleiben dort als Verlauf erhalten (Titelbild-Versionen = frühere Bilder der Fotohistorie).'),

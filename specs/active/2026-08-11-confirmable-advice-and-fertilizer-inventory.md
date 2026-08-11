@@ -1,7 +1,7 @@
 # Confirmable care advice, weather in the care plan, and a fertilizer inventory
 
 **Date:** 2026-08-11
-**Status:** Active - Phase 1 implemented in v52 (2026-08-11), Phase 2 open
+**Status:** Active - Phase 1 (v52) and Phase 2 (v53) implemented 2026-08-11, neither deployed yet
 **Type:** new-feature / bug-fix
 **Scope:** Stop care advice from being buried unconfirmed in the plant description, let the weather actually change a care plan instead of only colouring the prose, and give the run a list of the fertilizers on hand so its dosing advice refers to something the user owns.
 
@@ -47,7 +47,7 @@ Replace the "only for a durable shift" bar with a narrower guard now that the us
 - `app.js`: `applyKiDiagnosis` routes care-relevant profile fields through `addProposal` with `type:'advice'`; `confirmProposal` applies the append; new `commentProposal`; empty-plan guard; KI view renders `advice` with a comment box; `buildDossierPayload` exports `comment`.
 - `skills/garten/SKILL.md` and the routine prompt (`trig_01WGicrr1NgzQ11gYRMcxT6w`): the weather guard, the profile-vs-advice split, and reading comments on prior proposals. All three copies in the same sitting, per the standing rule.
 
-## Phase 2 - fertilizer inventory
+## Phase 2 - fertilizer inventory (SHIPPED v53)
 
 Only once Phase 1 is in place, because a dosing recommendation is precisely the advice that must be confirmable.
 
@@ -61,10 +61,16 @@ Only once Phase 1 is in place, because a dosing recommendation is precisely the 
 
 **Reading the pack.** Where a photo of the label exists, the run may read the NPK and dosage off it rather than relying on what was typed - with the pack text winning over any guess, and the plant file's own history winning over both.
 
-### Open questions for Phase 2
+### Decisions taken (both questions answered by the user, 2026-08-11)
 
-- Does `amountLeft` need to be tracked seriously, or is "the user will notice when it is empty" enough? Tracking consumption implies logging every feeding, which is a much bigger ask.
-- Should a confirmed feeding proposal automatically log a `duengen` task completion, or stay a suggestion?
+- **No quantity tracking.** Ruled out explicitly. What replaced it is a single availability switch: `available: false` with an `outSince` date, set by an "Aufgebraucht" button. That is not a stock figure nobody maintains - it is a fact the user states once, and it changes the advice completely.
+- **Confirming is not doing.** A confirmed plan or recommendation means "this is right", never "I have fed the plant". The `duengen` task is ticked off separately. Merging the two would reset the interval as though the plant had been fed, the reminder would vanish, and the plant would wait a full cycle.
+
+### Added during implementation
+
+- **"✓ mit Notiz" on every task card.** Ticking a feeding off now optionally records WHICH product actually went on - picked from the available inventory - and a remark or question. The remark is filed as an observation, which stamps the plant for re-assessment, so the run answers it the next morning. Repeated divergence from the suggestion is treated in the prompt as evidence about the suggestion, not about the user.
+- **Home-brewed feeds.** `selfmade: true`, with a one-tap "Brennnesseljauche ansetzen" that records the date it was set up. This matters because the built-in `fertilizerPlans` table names Brennnesseljauche as the early-season default for most vegetables without knowing whether any exists. When a self-made feed runs out the correct advice is not "buy more" but "set a new batch today", with two to three weeks of lead time and a bridge product named for the interval.
+- **Pack shots ride the normal photo pipeline** under key `duenger|<id>` with `kind:'duenger'` on photoMeta - excluded from the orphan-photo lists in both the KI view and the dossier, or every pack shot would sit in the inbox asking which plant it belongs to.
 
 ## Risks
 
