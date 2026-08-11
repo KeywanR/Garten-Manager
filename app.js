@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v53';
+const APP_BUILD='v54';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -524,7 +524,7 @@ function completeWithNote(id){
   const isFeed=d.id.endsWith(':duengen');
   let used='';
   if(isFeed){
-    const list=fertilizers().filter(f=>f.available!==false);
+    const list=feedsOnHand();
     if(list.length){
       const menu=list.map((f,i)=>`${i+1} = ${f.name}`).join('\n');
       const pick=(prompt(`Welchen Dünger hast du verwendet?\n${menu}\n0 = anderer oder keiner\n\nNummer (oder Name) eingeben:`,'1')||'').trim();
@@ -594,7 +594,7 @@ function taskHTML(d){
   const p=plant(d.plantId),s=taskState(d.id),started=!!state.tasks[d.id];
   const cls=started?classify(d):'new';
   const fert=fertilizerInfo(d,nextFor(d)||today());
-  const fertHTML=fert?`<div class="fert"><b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}${fertilizers().filter(f=>f.available!==false).length?`<br><span>Im Bestand: ${fertilizers().filter(f=>f.available!==false).map(f=>esc(f.name)).join(', ')}</span>`:''}</div>`:'';
+  const fertHTML=fert?`<div class="fert"><b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}${feedsOnHand().length?`<br><span>Im Bestand: ${feedsOnHand().map(f=>esc(f.name)).join(', ')}</span>`:''}</div>`:'';
   const due=started?'':initialDueFor(d);
   const dueTxt=started?'':(diff(due)===0?'heute':fmt(due));
   const cycleTxt=d.interval>=365?'in einem Jahr':`in ${d.interval} Tagen`;
@@ -999,7 +999,17 @@ async function applyKiDiagnosis(e){
    feature is worth — and a stock figure nobody maintains is worse than none,
    because the run would trust it. */
 const FERT_FORMS=['flüssig','Granulat','Stäbchen','Kompost','sonstiges'];
+/* Half the shed is not fertilizer. Algenkalk raises soil pH, Antikalk softens
+   the watering can — both live next to the feeds, both get photographed with
+   them, and neither feeds a plant. Without this distinction the rule „name a
+   product from the list" lets the run answer a nitrogen deficiency with lime,
+   which is not merely useless but moves the pH the wrong way. Only `Dünger`
+   may satisfy a feeding recommendation. */
+const FERT_TYPES=['Dünger','Bodenhilfsstoff','Wasseraufbereitung'];
 const fertilizers=()=>state.fertilizers||[];
+/* What may actually be used to feed a plant today: a Dünger, not emptied out.
+   Everything else in the shed is context, not an option. */
+const feedsOnHand=()=>fertilizers().filter(f=>f.available!==false&&(f.type||'Dünger')==='Dünger');
 /* Keyed by the fertilizer, not by a plant. The `kind` marker on photoMeta is
    what keeps these out of „Fotos ohne Pflanze": without it every pack shot
    would sit in the inbox asking which plant it belongs to, for ever. */
@@ -1009,10 +1019,12 @@ async function addFertilizer(){
   const name=(prompt('Name des Düngers (z. B. „Compo Blaukorn"):')||'').trim();
   if(!name)return;
   const id=`f-${slugify(name)}-${Date.now().toString(36)}`;
+  const type=(prompt(`Was ist es? ${FERT_TYPES.join(' / ')}`,'Dünger')||'').trim();
   const form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,'flüssig')||'').trim();
   const npk=(prompt('NPK laut Packung (optional, z. B. „14-7-14"):')||'').trim();
   const dosage=(prompt('Dosierung laut Packung (optional, z. B. „10 ml auf 5 l Wasser"):')||'').trim();
-  state.fertilizers=fertilizers().concat([{id,name,form,npk,dosage,note:'',
+  state.fertilizers=fertilizers().concat([{id,name,
+    type:FERT_TYPES.indexOf(type)!==-1?type:'Dünger',form,npk,dosage,note:'',
     selfmade:false,available:true,outSince:''}]);
   save();renderSettings();
   if(confirm('Foto von der Packung aufnehmen? Die KI liest Dosierung und NPK davon ab.'))
@@ -1046,7 +1058,7 @@ async function addNettleBrew(){
   state.fertilizers=fertilizers().concat([{
     id:`f-brennnesseljauche-${Date.now().toString(36)}`,
     name:'Brennnesseljauche (selbst angesetzt)',form:'flüssig',npk:'',
-    dosage:'1:10 bis 1:20 verdünnt, je nach Pflanze',note:`angesetzt ${started}`,
+    type:'Dünger',dosage:'1:10 bis 1:20 verdünnt, je nach Pflanze',note:`angesetzt ${started}`,
     selfmade:true,available:true,outSince:''}]);
   save();renderSettings();toast('Brennnesseljauche im Bestand');
 }
@@ -1072,6 +1084,8 @@ function editFertilizer(id){
   const f=fertilizers().find(x=>x.id===id);if(!f)return;
   const name=(prompt('Name:',f.name)||'').trim();if(!name)return;
   f.name=name;
+  const ty=(prompt(`Was ist es? ${FERT_TYPES.join(' / ')}`,f.type||'Dünger')||'').trim();
+  if(FERT_TYPES.indexOf(ty)!==-1)f.type=ty;
   f.form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,f.form||'')||'').trim();
   f.npk=(prompt('NPK laut Packung:',f.npk||'')||'').trim();
   f.dosage=(prompt('Dosierung laut Packung:',f.dosage||'')||'').trim();
@@ -1088,13 +1102,41 @@ async function deleteFertilizer(id){
   save();renderSettings();toast('Dünger entfernt');
 }
 
+/* Four prompts per product is fine for one bottle and absurd for a shelf.
+   One line per product, fields separated by |, so the whole inventory can be
+   typed once somewhere comfortable and pasted in. Duplicates by name are
+   skipped rather than merged: a second „Blaukorn" is almost always the same
+   tub entered twice, and silently merging two records that differ in dosage
+   would lose whichever was typed second. */
+function importFertilizerList(){
+  const el=document.getElementById('fertImport');if(!el)return;
+  const raw=(el.value||'').trim();
+  if(!raw)return toast('Nichts zum Einlesen – Zeilen ins Feld einfügen');
+  const lines=raw.split('\n').map(s=>s.trim()).filter(s=>s&&!s.startsWith('#'));
+  let added=0,skipped=0;
+  lines.forEach((line,i)=>{
+    const p=line.split('|').map(s=>(s||'').trim());
+    const name=p[0];
+    if(!name){skipped++;return}
+    if(fertilizers().some(f=>(f.name||'').toLowerCase()===name.toLowerCase())){skipped++;return}
+    state.fertilizers=fertilizers().concat([{
+      id:`f-${slugify(name)}-${Date.now().toString(36)}-${i}`,name,
+      type:FERT_TYPES.indexOf(p[1])!==-1?p[1]:'Dünger',
+      form:p[2]||'',npk:p[3]||'',dosage:p[4]||'',note:p[5]||'',
+      selfmade:false,available:true,outSince:''}]);
+    added++;
+  });
+  el.value='';save();renderSettings();
+  toast(`${added} übernommen${skipped?`, ${skipped} übersprungen (Dublette oder ohne Namen)`:''}`);
+}
+
 function renderFertilizers(){
   const box=document.getElementById('fertList');if(!box)return;
   const list=fertilizers();
   if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen.</div>`;return}
   box.innerHTML=`<div class="task-list">${list.map(f=>{
     const key=fertPhotoKey(f.id),img=photoCache[key],out=f.available===false;
-    const facts=[f.form,f.npk?`NPK ${f.npk}`:'',f.dosage,f.note].filter(Boolean).join(' · ');
+    const facts=[f.type&&f.type!=='Dünger'?f.type:'',f.form,f.npk?`NPK ${f.npk}`:'',f.dosage,f.note].filter(Boolean).join(' · ');
     return `<article class="task ${out?'late':''}"><div>
       <h3>${esc(f.name)} ${f.selfmade?'<span class="mini">selbst angesetzt</span>':''}${out?'<span class="mini">aufgebraucht</span>':''}</h3>
       <div class="meta">${out?`aufgebraucht seit ${fmt(f.outSince||today())} – wird nicht mehr empfohlen. `:''}${facts?esc(facts):'keine Angaben von der Packung'}</div>
@@ -1979,7 +2021,7 @@ async function buildDossierPayload(includePhotos){
      than naming none, because it looks like evidence that was considered. */
   const fertilizerList=fertilizers().map(f=>{
     const k=fertPhotoKey(f.id);
-    return {id:f.id,name:f.name,form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
+    return {id:f.id,name:f.name,type:f.type||'Dünger',form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
       selfmade:!!f.selfmade,available:f.available!==false,outSince:f.outSince||'',
       driveFile:gmPhotoInDrive(k,photoCache[k])?gmDrivePhotoName(k,photoCache[k]):''};
   });
