@@ -247,6 +247,10 @@ a{color:var(--leaf)}
           <div id="fertList"></div>
           <button class="btn primary" onclick="addFertilizer()">Dünger hinzufügen</button>
           <button class="btn soft" onclick="addNettleBrew()">🌿 Brennnesseljauche ansetzen</button>
+          <p class="meta">Ganze Liste auf einmal: eine Zeile je Produkt, Felder mit | getrennt –<br>
+             <code>Name | Dünger/Bodenhilfsstoff/Wasseraufbereitung | Form | NPK | Dosierung | Notiz</code></p>
+          <textarea id="fertImport" rows="4" style="width:100%" placeholder="Naturen Bio Dünger | Dünger | flüssig | 3-3-5 | 14 ml auf 2 l Wasser | woechentlich"></textarea>
+          <button class="btn soft" onclick="importFertilizerList()">Liste einlesen</button>
         </div>
         <div class="panel">
           <h3>☁️ Google Drive Sync</h3>

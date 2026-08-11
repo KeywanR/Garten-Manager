@@ -104,7 +104,8 @@ Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
   `npk` und `dosage` wie auf der Packung, dazu `driveFile` mit dem Foto der
   Packung, sofern es schon in Drive liegt. Öffne das Foto, wenn du eine
   Dosierung brauchst: die Packung ist die Quelle, das Getippte nur eine
-  Zusammenfassung. Dazu zwei Flags, die die Empfehlung entscheiden:
+  Zusammenfassung. Dazu `type` (`Dünger`, `Bodenhilfsstoff`,
+  `Wasseraufbereitung`) und zwei Flags, die die Empfehlung entscheiden:
   **`available: false`** heißt aufgebraucht (seit `outSince`) — empfiehl es
   nicht, auch nicht „sobald wieder da"; **`selfmade: true`** heißt selbst
   angesetzt, typischerweise Brennnesseljauche
@@ -286,6 +287,14 @@ Ein blankes „düngen" ohne Produkt ist keine Empfehlung. Ist `fertilizers[]`
 leer, sag genau das: der Nutzer soll seinen Bestand in den Einstellungen
 eintragen, sonst bleibt jede Düngeempfehlung allgemein.
 
+**Nur `type: "Dünger"` ernährt eine Pflanze.** Im Schuppen steht auch anderes:
+Algenkalk hebt den Boden-pH, Antikalk enthärtet das Gießwasser. Beides steht
+neben den Düngern, beides ist fotografiert, keines davon düngt. Eine
+Stickstoffarmut mit Kalk zu beantworten ist nicht bloß wirkungslos, es
+verschiebt den pH in die falsche Richtung. `Bodenhilfsstoff` und
+`Wasseraufbereitung` sind Kontext — erwähne sie, wenn sie zur Sache gehören
+(hartes Gießwasser, saurer Boden), aber sie erfüllen nie eine Düngeempfehlung.
+
 **Aufgebraucht heißt aufgebraucht.** Ein Eintrag mit `available: false` existiert
 für dich nicht als Option. Such einen Ersatz im übrigen Bestand, und wenn keiner
 passt, stell einen `proposePurchase`.
@@ -417,6 +426,8 @@ trotzdem falsch:
 - Du willst zum Düngen raten, ohne ein Produkt aus `fertilizers[]` zu nennen
   oder einen `proposePurchase` zu stellen — **stopp**. „Düngen" allein ist
   keine Anweisung, die jemand ausführen kann.
+- Du willst mit etwas düngen lassen, das nicht `type: "Dünger"` ist — **stopp**.
+  Kalk und Wasseraufbereiter sind keine Nahrung.
 - Du willst etwas mit `available: false` empfehlen — **stopp**. Es ist leer.
   Ersatz nennen, oder Zukauf; bei `selfmade` das Neuansetzen samt Wartezeit.
 - Du willst denselben Dünger empfehlen, den der Nutzer laut `history` zuletzt

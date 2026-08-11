@@ -72,6 +72,15 @@ Only once Phase 1 is in place, because a dosing recommendation is precisely the 
 - **Home-brewed feeds.** `selfmade: true`, with a one-tap "Brennnesseljauche ansetzen" that records the date it was set up. This matters because the built-in `fertilizerPlans` table names Brennnesseljauche as the early-season default for most vegetables without knowing whether any exists. When a self-made feed runs out the correct advice is not "buy more" but "set a new batch today", with two to three weeks of lead time and a bridge product named for the interval.
 - **Pack shots ride the normal photo pipeline** under key `duenger|<id>` with `kind:'duenger'` on photoMeta - excluded from the orphan-photo lists in both the KI view and the dossier, or every pack shot would sit in the inbox asking which plant it belongs to.
 
+### Added in v54, after the first real inventory was photographed
+
+Six products came in and two of them were not fertilizer: Dehner Algenkalk (a liming soil conditioner) and Dehner Antikalk (a citric-acid water softener). Both sit on the same shelf, both get photographed with the feeds, and neither feeds a plant. The rule written in v53 - "name a product from `fertilizers[]`" - would happily have answered a nitrogen shortage with lime, which is not merely useless: it moves soil pH the wrong way.
+
+- **`type` field**: `Dünger` / `Bodenhilfsstoff` / `Wasseraufbereitung`. Only `Dünger` can satisfy a feeding recommendation. The other two are context the run may cite when relevant (hard tap water, an alkaline bed, box hedge) but never as a feed. Enforced in `feedsOnHand()`, which now gates the task card, the completion picker and the prompt rule.
+- **Paste importer**: one line per product, fields separated by `|`. Four prompts per product is fine for one bottle and absurd for a shelf. Duplicate names are skipped rather than merged - a second "Blaukorn" is almost always the same tub entered twice, and merging two records that differ in dosage would lose whichever was typed second.
+
+Observed from the first inventory, worth keeping: the seasonal switch in `fertilizerPlans` is fully covered by what is already owned - Florissa Blattgrün PLUS (8-0-0) as the nitrogen-led early feed, Naturen Bio Dünger (3-3-5) as the potassium-led one from June. No purchase is needed for the vegetables this season. There is no Brennnesseljauche on hand, which is precisely the case the availability flag exists for.
+
 ## Risks
 
 | Risk | Cover |
