@@ -169,6 +169,15 @@ a{color:var(--leaf)}
 .capture-row{display:flex;gap:8px;flex-wrap:wrap}
 .mini{display:inline-block;padding:3px 8px;border-radius:999px;background:var(--leaf-soft);
   color:var(--leaf-ink);font-size:.74rem;font-weight:700}
+/* A fertilizer label is a table of facts — NPK here, dose there — and reads as
+   noise when flattened into one dot-separated line. */
+.fert-facts{margin:0;font-size:.85rem;display:grid;gap:3px}
+.fert-facts>div{display:flex;gap:8px;align-items:baseline}
+.fert-facts dt{color:var(--muted);flex:0 0 74px;font-weight:600}
+.fert-facts dd{margin:0;flex:1;min-width:0}
+.fert-tags{display:flex;gap:5px;flex-wrap:wrap}
+.fert-out{opacity:.55}
+.fert-out .pc-photo img{filter:grayscale(1)}
 
 @media(max-width:850px){
   .stats{grid-template-columns:repeat(2,1fr)} .plant-grid{grid-template-columns:repeat(2,1fr)}
@@ -199,6 +208,7 @@ a{color:var(--leaf)}
     <button data-view="today" class="active">Heute</button>
     <button data-view="week">Diese Woche</button>
     <button data-view="plants">Pflanzen</button>
+    <button data-view="duenger">Dünger</button>
     <button data-view="ki">KI-Diagnosen <span class="nav-badge" id="kiBadge" style="display:none"></span></button>
     <button data-view="journal">Journal</button>
     <button data-view="data">Daten &amp; KI</button>
@@ -224,6 +234,24 @@ a{color:var(--leaf)}
            gehört zu den Pflanzen, nicht in den KI-Bereich. -->
       <div id="photoInbox"></div>
     </section>
+    <section id="view-duenger" class="hidden">
+      <div class="section-title"><h2>Meine Dünger</h2><small id="fertCount"></small></div>
+      <p class="meta">Was tatsächlich im Schuppen steht. Die KI empfiehlt nur, was hier gelistet und
+         verfügbar ist – mit Dosierung –, oder schlägt einen Zukauf vor.</p>
+      <div class="capture-row" style="margin:10px 0 14px">
+        <button class="btn primary" onclick="addFertilizerByPhoto()">📷 Dünger fotografieren</button>
+        <button class="btn soft" onclick="addFertilizer()">Ohne Foto eintragen</button>
+        <button class="btn soft" onclick="addNettleBrew()">🌿 Brennnesseljauche ansetzen</button>
+      </div>
+      <div class="plant-grid" id="fertList"></div>
+      <details style="margin-top:16px">
+        <summary class="meta">Mehrere auf einmal eintragen</summary>
+        <p class="meta">Eine Zeile je Produkt, Felder mit | getrennt:<br>
+           <code>Name | Dünger/Bodenhilfsstoff/Wasseraufbereitung | Form | NPK | Dosierung | Notiz</code></p>
+        <textarea id="fertImport" rows="4" style="width:100%" placeholder="Naturen Bio Dünger | Dünger | flüssig | 3-3-5 | 14 ml auf 2 l Wasser | wöchentlich"></textarea>
+        <button class="btn soft" onclick="importFertilizerList()">Liste einlesen</button>
+      </details>
+    </section>
     <section id="view-ki" class="hidden">
       <div class="section-title"><h2>KI-Diagnosen</h2>
         <small><button class="btn" onclick="kiMarkAllRead()">Alle als gelesen</button></small></div>
@@ -240,17 +268,6 @@ a{color:var(--leaf)}
           <p>Erstellt eine strukturierte Akte je Pflanze – Pflegeverlauf, Gesundheit und Fotos – die Claude über MCP auswerten kann.</p>
           <button class="btn primary" onclick="exportDossier()">KI-Akte exportieren</button>
           <p class="meta" id="dossierInfo"></p>
-        </div>
-        <div class="panel">
-          <h3>🧪 Meine Dünger</h3>
-          <p>Was tatsächlich im Schuppen steht. Die KI empfiehlt nur, was hier gelistet ist – mit Dosierung –, oder schlägt einen Zukauf vor. Ein Foto der Packung hilft ihr, NPK und Dosierung selbst abzulesen.</p>
-          <div id="fertList"></div>
-          <button class="btn primary" onclick="addFertilizer()">Dünger hinzufügen</button>
-          <button class="btn soft" onclick="addNettleBrew()">🌿 Brennnesseljauche ansetzen</button>
-          <p class="meta">Ganze Liste auf einmal: eine Zeile je Produkt, Felder mit | getrennt –<br>
-             <code>Name | Dünger/Bodenhilfsstoff/Wasseraufbereitung | Form | NPK | Dosierung | Notiz</code></p>
-          <textarea id="fertImport" rows="4" style="width:100%" placeholder="Naturen Bio Dünger | Dünger | flüssig | 3-3-5 | 14 ml auf 2 l Wasser | woechentlich"></textarea>
-          <button class="btn soft" onclick="importFertilizerList()">Liste einlesen</button>
         </div>
         <div class="panel">
           <h3>☁️ Google Drive Sync</h3>

@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v54';
+const APP_BUILD='v55';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -929,6 +929,29 @@ async function applyKiDiagnosis(e){
       detail:[pp.reason||'',pp.dosage?`Vorgeschlagene Dosierung: ${pp.dosage}`:''].filter(Boolean).join('\n'),
       date:d}))changed=true;
   }
+  /* The run has read a pack shot and says what the product is. It fills the
+     record rather than creating one — the entry and its photo already exist,
+     created when the user took the picture — and raises a proposal so a
+     misread label is corrected rather than quietly believed. */
+  if(e.identifyFertilizer&&e.identifyFertilizer.id){
+    const q=e.identifyFertilizer,f=fertilizers().find(x=>x.id===q.id);
+    if(f){
+      if(q.name)f.name=q.name;
+      if(FERT_TYPES.indexOf(q.type)!==-1)f.type=q.type;
+      if(q.form)f.form=q.form;
+      if(q.npk)f.npk=q.npk;
+      if(q.dosage)f.dosage=q.dosage;
+      if(q.note)f.note=q.note;
+      delete f.needsReview;
+      const key=fertPhotoKey(f.id);
+      if(state.photoMeta[key])state.photoMeta[key].caption=`Dünger: ${f.name}`;
+      addProposal({id:`${e.id||'ki'}-fert-${f.id}`,plantId:'',type:'fertilizer',
+        title:`Dünger erkannt: ${f.name}`,
+        detail:[q.type&&q.type!=='Dünger'?q.type:'',q.form,q.npk?`NPK ${q.npk}`:'',q.dosage,q.note]
+          .filter(Boolean).join('\n'),date:d});
+      changed=true;
+    }
+  }
   // assignPhoto: adopt a photo the app already holds but has not filed under any
   // plant (imported via "Fotos importieren"). The inbox could previously only
   // create plants or deliver new images — never re-home an orphan.
@@ -1042,7 +1065,7 @@ async function setFertilizerPhoto(id){
   const data=await resizePhoto(file),key=fertPhotoKey(id);
   await putPhoto(key,data);
   state.photoMeta[key]={plantId:'',date:today(),caption:`Dünger: ${f.name}`,cover:false,kind:'duenger'};
-  save();renderSettings();toast('Foto gespeichert – wird beim nächsten Sync hochgeladen');
+  save();renderFertilizers();toast('Foto gespeichert – wird beim nächsten Sync hochgeladen');
 }
 
 /* Brennnesseljauche is not a product, it is a bucket in the corner — and the
@@ -1060,7 +1083,7 @@ async function addNettleBrew(){
     name:'Brennnesseljauche (selbst angesetzt)',form:'flüssig',npk:'',
     type:'Dünger',dosage:'1:10 bis 1:20 verdünnt, je nach Pflanze',note:`angesetzt ${started}`,
     selfmade:true,available:true,outSince:''}]);
-  save();renderSettings();toast('Brennnesseljauche im Bestand');
+  save();renderFertilizers();toast('Brennnesseljauche im Bestand');
 }
 
 /* „Aufgebraucht" is a switch, not a quantity. Tracking how much is left would
@@ -1074,10 +1097,30 @@ function toggleFertilizerStock(id){
   const wasOut=f.available===false;
   f.available=wasOut;
   f.outSince=wasOut?'':today();
-  save();renderSettings();
+  save();renderFertilizers();
   toast(wasOut?`${f.name}: wieder verfügbar`
       :f.selfmade?`${f.name} aufgebraucht – die KI erinnert ans Neuansetzen und rechnet solange ohne`
                  :`${f.name} aufgebraucht – die KI schlägt Ersatz oder Zukauf vor`);
+}
+
+/* The plant flow, applied to the shelf: photograph the thing, let the daily run
+   identify it, correct what it got wrong. Typing NPK and a dilution off the back
+   of a bottle is exactly the transcription a language model should be doing, and
+   the label is already in the photo. The entry exists immediately — with
+   `needsReview` set and no name — so the pack shot has somewhere to live and
+   reaches Drive on the next sync, which is what the run needs to open it. */
+async function addFertilizerByPhoto(){
+  const file=await pickImage(true);
+  if(!file||!file.type.startsWith('image/'))return;
+  const id=`f-neu-${Date.now().toString(36)}`;
+  const data=await resizePhoto(file),key=fertPhotoKey(id);
+  await putPhoto(key,data);
+  state.photoMeta[key]={plantId:'',date:today(),caption:'Dünger (noch nicht erkannt)',cover:false,kind:'duenger'};
+  state.fertilizers=fertilizers().concat([{id,name:'Neuer Dünger (wird erkannt)',
+    type:'Dünger',form:'',npk:'',dosage:'',note:'',
+    selfmade:false,available:true,outSince:'',needsReview:true}]);
+  save();renderFertilizers();
+  toast('Foto gespeichert – die KI liest die Packung beim nächsten Lauf');
 }
 
 function editFertilizer(id){
@@ -1089,7 +1132,8 @@ function editFertilizer(id){
   f.form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,f.form||'')||'').trim();
   f.npk=(prompt('NPK laut Packung:',f.npk||'')||'').trim();
   f.dosage=(prompt('Dosierung laut Packung:',f.dosage||'')||'').trim();
-  save();renderSettings();toast('Dünger aktualisiert');
+  delete f.needsReview;   // the user has now said what it is; stop flagging it
+  save();renderFertilizers();toast('Dünger aktualisiert');
 }
 
 async function deleteFertilizer(id){
@@ -1099,7 +1143,7 @@ async function deleteFertilizer(id){
   if(photoCache[key]){try{await removePhoto(key)}catch(e){console.warn('Düngerfoto konnte nicht gelöscht werden',e)}}
   delete state.photoMeta[key];
   state.fertilizers=fertilizers().filter(x=>x.id!==id);
-  save();renderSettings();toast('Dünger entfernt');
+  save();renderFertilizers();toast('Dünger entfernt');
 }
 
 /* Four prompts per product is fine for one bottle and absurd for a shelf.
@@ -1126,27 +1170,45 @@ function importFertilizerList(){
       selfmade:false,available:true,outSince:''}]);
     added++;
   });
-  el.value='';save();renderSettings();
+  el.value='';save();renderFertilizers();
   toast(`${added} übernommen${skipped?`, ${skipped} übersprungen (Dublette oder ohne Namen)`:''}`);
 }
 
 function renderFertilizers(){
   const box=document.getElementById('fertList');if(!box)return;
   const list=fertilizers();
-  if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen.</div>`;return}
-  box.innerHTML=`<div class="task-list">${list.map(f=>{
+  const cnt=document.getElementById('fertCount');
+  if(cnt){const n=feedsOnHand().length;cnt.textContent=list.length?`${list.length} erfasst · ${n} einsetzbar`:''}
+  if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen. Fotografiere die Packung – die KI liest Sorte, NPK und Dosierung selbst ab.</div>`;return}
+  box.innerHTML=list.map(f=>{
     const key=fertPhotoKey(f.id),img=photoCache[key],out=f.available===false;
-    const facts=[f.type&&f.type!=='Dünger'?f.type:'',f.form,f.npk?`NPK ${f.npk}`:'',f.dosage,f.note].filter(Boolean).join(' · ');
-    return `<article class="task ${out?'late':''}"><div>
-      <h3>${esc(f.name)} ${f.selfmade?'<span class="mini">selbst angesetzt</span>':''}${out?'<span class="mini">aufgebraucht</span>':''}</h3>
-      <div class="meta">${out?`aufgebraucht seit ${fmt(f.outSince||today())} – wird nicht mehr empfohlen. `:''}${facts?esc(facts):'keine Angaben von der Packung'}</div>
-      ${img?`<img src="${img}" alt="${esc(f.name)}" style="max-width:120px;border-radius:8px;margin-top:6px">`:''}
-    </div><div class="actions">
-      <button class="btn ${out?'primary':'soft'}" onclick="toggleFertilizerStock('${f.id}')">${out?'Wieder da':'Aufgebraucht'}</button>
-      <button class="btn soft" onclick="setFertilizerPhoto('${f.id}')">${img?'Foto neu':'Foto'}</button>
-      <button class="btn soft" onclick="editFertilizer('${f.id}')">Ändern</button>
-      <button class="btn" onclick="deleteFertilizer('${f.id}')">Entfernen</button>
-    </div></article>`}).join('')}</div>`;
+    const tags=[
+      f.type&&f.type!=='Dünger'?`<span class="mini">${esc(f.type)}</span>`:'',
+      f.form?`<span class="mini">${esc(f.form)}</span>`:'',
+      f.selfmade?'<span class="mini">selbst angesetzt</span>':'',
+      f.needsReview?'<span class="mini">wird erkannt …</span>':''
+    ].filter(Boolean).join('');
+    const row=(k,v)=>v?`<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`:'';
+    const facts=row('NPK',f.npk)+row('Dosierung',f.dosage)+row('Notiz',f.note);
+    return `<article class="plant-card ${out?'fert-out':''}">
+      <div class="pc-photo" onclick="setFertilizerPhoto('${f.id}')" title="Foto der Packung aufnehmen">
+        ${img?`<img src="${img}" alt="${esc(f.name)}">`
+             :`<div class="pc-empty">Kein Foto<br><small>tippen zum Aufnehmen</small></div>`}
+        ${out?`<span class="pc-health">aufgebraucht</span>`:''}
+      </div>
+      <div class="pc-body">
+        <h3>${esc(f.name)}</h3>
+        ${tags?`<div class="fert-tags">${tags}</div>`:''}
+        ${facts?`<dl class="fert-facts">${facts}</dl>`
+               :`<div class="meta">Keine Angaben von der Packung</div>`}
+        ${out?`<div class="pc-next">Aufgebraucht seit ${fmt(f.outSince||today())}. Wird nicht mehr empfohlen${f.selfmade?' – neu ansetzen dauert 2 bis 3 Wochen':''}.</div>`:''}
+        <div class="pc-actions">
+          <button class="btn ${out?'primary':'soft'}" onclick="toggleFertilizerStock('${f.id}')">${out?'Wieder da':'Aufgebraucht'}</button>
+          <button class="btn soft" onclick="editFertilizer('${f.id}')">Ändern</button>
+          <button class="btn soft link-danger" onclick="deleteFertilizer('${f.id}')">Entfernen</button>
+        </div>
+      </div>
+    </article>`}).join('');
 }
 
 /* ------------------------------------------------------- KI proposals ------- */
@@ -1668,7 +1730,6 @@ function renderSettings(){
   if(ii)ii.textContent=state.meta?.lastIntegrityAt?`${state.meta.lastIntegrityOk?'✓ Keine erkennbaren Probleme':'⚠ Probleme gefunden'} · geprüft ${new Date(state.meta.lastIntegrityAt).toLocaleString('de-AT')}`:'Noch nicht geprüft';
   if(di)di.textContent=state.meta?.lastDossierAt?`Letzter KI-Export: ${new Date(state.meta.lastDossierAt).toLocaleString('de-AT')}`:'Noch kein KI-Export';
   if(stgl)stgl.textContent=state.showAllSeasons?'Nur saisonale Aufgaben anzeigen':'Auch außersaisonale anzeigen';
-  renderFertilizers();
   if(window.CloudSync)CloudSync.renderStatus();
   renderBuildInfo();
 }
@@ -1701,7 +1762,7 @@ async function renderBuildInfo(){
   }
 }
 
-function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderJournal();renderSettings();
+function renderAll(){rebuildCatalog();renderSeason();renderStats();renderToday();renderWeek();renderPlants();renderFertilizers();renderJournal();renderSettings();
   if(window.KiDiagnose)KiDiagnose.render()}
 
 /* Remember which tab is open. Signing in to Google is a full-page redirect, so
@@ -1719,6 +1780,7 @@ function switchView(v){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
   try{sessionStorage.setItem(LS_VIEW,v)}catch(e){}
   if(v==='plants')renderPlants();
+  if(v==='duenger')renderFertilizers();
 }
 function restoreView(){
   let v='';try{v=sessionStorage.getItem(LS_VIEW)||''}catch(e){}
@@ -2023,6 +2085,7 @@ async function buildDossierPayload(includePhotos){
     const k=fertPhotoKey(f.id);
     return {id:f.id,name:f.name,type:f.type||'Dünger',form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
       selfmade:!!f.selfmade,available:f.available!==false,outSince:f.outSince||'',
+      needsReview:!!f.needsReview,
       driveFile:gmPhotoInDrive(k,photoCache[k])?gmDrivePhotoName(k,photoCache[k]):''};
   });
   const payload={
