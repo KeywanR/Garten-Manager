@@ -81,6 +81,14 @@ Six products came in and two of them were not fertilizer: Dehner Algenkalk (a li
 
 Observed from the first inventory, worth keeping: the seasonal switch in `fertilizerPlans` is fully covered by what is already owned - Florissa Blattgrün PLUS (8-0-0) as the nitrogen-led early feed, Naturen Bio Dünger (3-3-5) as the potassium-led one from June. No purchase is needed for the vegetables this season. There is no Brennnesseljauche on hand, which is precisely the case the availability flag exists for.
 
+### Added in v55, after the first inventory was used
+
+- **Own tab.** The shed outgrew a settings panel the moment it held six products. `Dünger` now sits next to `Pflanzen` in the nav, with a count that separates what is owned from what can actually feed something ("6 erfasst, 4 einsetzbar").
+- **Card layout.** The old row flattened type, form, NPK, dosage and note into one dot-joined line, which read as noise. A fertilizer label is a table of facts, so it is laid out as one, reusing the existing `.plant-card` structure rather than inventing a second card style.
+- **Photo-first creation, mirroring plants.** `addFertilizerByPhoto()` creates an entry with `needsReview: true` and no name, stores the pack shot, and lets it reach Drive on the next sync. The run opens the label and returns `identifyFertilizer` (id, name, type, form, npk, dosage, note); the app fills the record, clears the flag and raises a `fertilizer` proposal so a misread label is corrected rather than believed. The prompt requires an unreadable field to be left EMPTY rather than guessed: an empty dosage is an open question, an invented one gets carried out.
+
+**What could not be done, and why it is written down:** the user asked for six pack photos he had already shared to be added directly. That is not possible from outside the app. `restorePhotos` (`app.js:1778`) clears the whole IndexedDB photo store and replaces it, so the only Drive-to-app image route is destructive, and photo records are keyed to entries only the app creates. Editing the synced state file by hand would mean forging the per-record timestamps the merge depends on. The photo-first flow above is the answer to that request, not a substitute for it.
+
 ## Risks
 
 | Risk | Cover |

@@ -27,7 +27,8 @@
      recommendation that used to be appended to the plant file unseen; `note`
      is the run telling you a suggestion could not be applied. */
   const TYPE_LABEL = { newPlant: 'neue Pflanze', plan: 'Pflegeplan', tasks: 'Pflegeplan',
-                       advice: 'Empfehlung', note: 'Hinweis', purchase: 'Zukauf' };
+                       advice: 'Empfehlung', note: 'Hinweis', purchase: 'Zukauf',
+                       fertilizer: 'Dünger erkannt' };
 
   /* ----------------------------------------------------------- queries ----- */
   const findings = () => (state.observations || []).filter(o => o.type === 'KI-Diagnose');
