@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v51';
+const APP_BUILD='v52';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -655,6 +655,15 @@ function renderJournal(){
 
 /* --------------------------------------------------------- plant profiles --- */
 const PROFILE_FIELDS=['location','planted','watering','fertilizing','diseases','treatments','harvest','notes'];
+/* Care instruction vs. descriptive record. A line in `watering` or `fertilizing`
+   tells the user to DO something; appending it silently to the plant description
+   buried the one thing that needed a decision — it was neither confirmed nor
+   turned into a task, and only discoverable by opening the file and reading.
+   These three fields become confirmable proposals instead. The rest are
+   observations about the plant and keep appending: turning every observed fact
+   into a confirmation prompt is how a user learns to click through unread. */
+const ADVICE_FIELDS=['watering','fertilizing','treatments'];
+const ADVICE_LABELS={watering:'Gießen',fertilizing:'Düngen',treatments:'Behandlung'};
 const PROFILE_LABELS={location:'Standort / Gartenbereich',planted:'Gepflanzt / Alter',watering:'Bewässerungsplan',fertilizing:'Düngeplan',diseases:'Krankheiten / Risiken',treatments:'Behandlungen / Maßnahmen',harvest:'Ernte / Entwicklung',notes:'Allgemeine Notizen'};
 const profileFor=id=>{const b={};PROFILE_FIELDS.forEach(f=>b[f]='');return {...b,...(state.profiles[id]||{})}};
 function saveProfile(id){
@@ -850,6 +859,22 @@ async function applyKiDiagnosis(e){
         title:removes.length||changes.length?'Pflegeplan anpassen':(adds.length===1?adds[0].title||'Neue Pflegeaufgabe':`${adds.length} neue Pflegeaufgaben`),
         detail:lines.join('\n'),
         payload:{addTasks:adds,changeTasks:changes,removeTasks:removes},date:d}))changed=true;
+    }else{
+      /* Everything the run proposed filtered out: an addition that already
+         exists, or a change/removal naming a task id this plant does not have.
+         Dropping it here was silent — no proposal, no message — while the plant
+         was still stamped as reviewed further down, so the run never came back
+         to it and the user never learned a suggestion had been made at all. */
+      const wanted=[];
+      (plan.addTasks||[]).filter(t=>t&&t.type).forEach(t=>
+        wanted.push(`+ ${t.title||t.type} — gibt es hier schon`));
+      (plan.changeTasks||[]).filter(t=>t&&t.id).forEach(t=>
+        wanted.push(`~ ${t.id} — diese Aufgabe gibt es hier nicht`));
+      (plan.removeTasks||[]).filter(t=>t&&t.id).forEach(t=>
+        wanted.push(`− ${t.id} — diese Aufgabe gibt es hier nicht`));
+      if(wanted.length&&addProposal({id:`${e.id||'ki'}-plan-noop`,plantId:e.plantId,type:'note',
+        title:'Pflegeplan-Vorschlag konnte nicht angewendet werden',
+        detail:(plan.reason?[plan.reason,'']:[]).concat(wanted).join('\n'),date:d}))changed=true;
     }
   }
   // assignPhoto: adopt a photo the app already holds but has not filed under any
@@ -897,6 +922,12 @@ async function applyKiDiagnosis(e){
       if(!txt||typeof txt!=='string')continue;
       const tag=`[KI ${d}] ${txt}`;
       if(prof[f]&&prof[f].indexOf(tag)!==-1)continue;   // already applied
+      if(ADVICE_FIELDS.indexOf(f)!==-1){
+        if(addProposal({id:`${e.id||'ki'}-advice-${f}`,plantId:e.plantId,type:'advice',
+          title:`${ADVICE_LABELS[f]||f}: Empfehlung`,detail:txt,
+          payload:{field:f,text:tag},date:d}))changed=true;
+        continue;
+      }
       prof[f]=prof[f]?`${prof[f]}\n${tag}`:tag;
       changed=true;
     }
@@ -917,7 +948,7 @@ function addProposal(p){
   if(state.kiProposals.some(x=>x.id===p.id))return false;
   state.kiProposals.push({id:p.id,plantId:p.plantId||'',type:p.type||'tasks',
     title:p.title||'Vorschlag',detail:p.detail||'',payload:p.payload||null,
-    date:p.date||today(),status:'pending',decidedAt:''});
+    date:p.date||today(),status:'pending',decidedAt:'',comment:''});
   return true;
 }
 const pendingProposals=()=>(state.kiProposals||[]).filter(p=>p.status==='pending');
@@ -945,14 +976,39 @@ async function confirmProposal(id){
     if(Array.isArray(pl.addTasks)&&pl.addTasks.length)
       await applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:pl.addTasks});
   }
+  // Confirming advice does exactly what the old silent path did — append the
+  // tagged line to the plant file — but only now, and only because it was asked.
+  if(p.type==='advice'&&p.payload&&p.payload.field&&p.plantId){
+    const f=p.payload.field,tag=p.payload.text||'',prof={...profileFor(p.plantId)};
+    if(tag&&!(prof[f]&&prof[f].indexOf(tag)!==-1))prof[f]=prof[f]?`${prof[f]}\n${tag}`:tag;
+    state.profiles[p.plantId]=prof;
+  }
   if(p.type==='newPlant'){
     const cp=(state.customPlants||[]).find(x=>x.id===p.plantId);
     if(cp)delete cp.fromKi;
   }
   p.status='confirmed';p.decidedAt=today();
   state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Bestätigt: ${p.title}`});
-  save();renderAll();toast('Bestätigt – Pflegeplan aktualisiert');
+  save();renderAll();
+  toast(p.type==='advice'?'Bestätigt – in der Pflanzenakte vermerkt'
+       :p.type==='note'?'Zur Kenntnis genommen'
+       :'Bestätigt – Pflegeplan aktualisiert');
 }
+/* The third answer, next to yes and no. The suggestion leaves the pending list
+   — it has been dealt with — but the user has said something back, and that
+   sentence travels to the next run in the dossier. Without it, disagreeing with
+   a recommendation meant rejecting it silently, and the run would make the same
+   suggestion again a week later having learned nothing from the refusal. */
+function commentProposal(id){
+  const p=(state.kiProposals||[]).find(x=>x.id===id);
+  if(!p||p.status!=='pending')return;
+  const txt=(prompt(`Anmerkung zu „${p.title}" — sie geht beim nächsten Lauf an die KI:`,p.comment||'')||'').trim();
+  if(!txt)return;
+  p.comment=txt;p.status='commented';p.decidedAt=today();
+  state.history.unshift({date:today(),taskId:'ki-proposal',plantId:p.plantId,title:`Kommentiert: ${p.title}`});
+  save();renderAll();toast('Anmerkung gespeichert – die KI antwortet beim nächsten Lauf');
+}
+
 async function rejectProposal(id){
   const p=(state.kiProposals||[]).find(x=>x.id===id);
   if(!p||p.status!=='pending')return;
@@ -1737,7 +1793,7 @@ async function buildDossierPayload(includePhotos){
     .filter(([k,m])=>m&&!m.ignored&&photoCache[k]&&!gmPhotoInDrive(k,photoCache[k])).length;
   // Decisions already taken, so nothing rejected gets proposed again.
   const proposals=(state.kiProposals||[]).map(p=>({id:p.id,type:p.type,plantId:p.plantId,
-    title:p.title,status:p.status,date:p.date,decidedAt:p.decidedAt||''}));
+    title:p.title,status:p.status,date:p.date,decidedAt:p.decidedAt||'',comment:p.comment||''}));
   // Read markers are exported purely so this state is observable from outside
   // the app. Without them, "did my confirmations survive the sync?" cannot be
   // answered from Drive at all — which is exactly the question that came up.
