@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v59';
+const APP_BUILD='v61';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -1137,8 +1137,15 @@ const FERT_FORMS=['flüssig','Granulat','Stäbchen','Kompost','sonstiges'];
    them, and neither feeds a plant. Without this distinction the rule „name a
    product from the list" lets the run answer a nitrogen deficiency with lime,
    which is not merely useless but moves the pH the wrong way. Only `Dünger`
-   may satisfy a feeding recommendation. */
-const FERT_TYPES=['Dünger','Bodenhilfsstoff','Wasseraufbereitung'];
+   may satisfy a feeding recommendation.
+
+   `Pflanzenstärkung` exists because a declared NPK is not proof of a fertilizer.
+   Schachtelhalmbrühe carries 0,5-0,15-1,5 on the label and is legally an
+   organic NPK product, but it is a silica tonic sprayed on LEAVES to harden
+   them against fungus — nutritionally it is a rounding error. Classifying it as
+   food meant it could be offered against a nitrogen deficiency, where it would
+   do nothing. Its advice belongs in `treatments`, never in `fertilizing`. */
+const FERT_TYPES=['Dünger','Pflanzenstärkung','Bodenhilfsstoff','Wasseraufbereitung'];
 const fertilizers=()=>state.fertilizers||[];
 /* What may actually be used to feed a plant today: a Dünger, not emptied out.
    Everything else in the shed is context, not an option. */
@@ -1269,17 +1276,98 @@ async function addFertilizerByPhoto(){
   toast('Die KI liest die Packung beim nächsten Lauf');
 }
 
+/* Everything the daily run actually reads, in one editable form.
+
+   It used to be four `prompt()` dialogs that could not reach `note`,
+   `available` or `selfmade`, and left no record that a human had corrected
+   anything - so the next identification was free to overwrite a correction with
+   its own reading of a blurry label. Editing has to be authoritative, or it is
+   not worth doing. */
 function editFertilizer(id){
   const f=fertilizers().find(x=>x.id===id);if(!f)return;
-  const name=(prompt('Name:',f.name)||'').trim();if(!name)return;
+  const el=document.getElementById('fertFile');if(!el)return;
+  const opt=(list,cur)=>list.map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
+  el.innerHTML=`<div class="pf-panel">
+    <div class="pf-head">
+      <div><h2>Dünger bearbeiten</h2>
+        <div class="meta">Was du hier änderst, gilt. Die KI überschreibt es nicht mehr.</div></div>
+      <button class="pf-close" onclick="closeFertFile()" aria-label="Schließen">&times;</button>
+    </div>
+    <div class="pf-body">
+      <div class="fp">
+        <div class="field full"><label for="fe-name">Name</label>
+          <input id="fe-name" value="${esc(f.name||'')}"></div>
+        <div class="grid2">
+          <div class="field"><label for="fe-type">Art</label>
+            <select id="fe-type">${opt(FERT_TYPES,f.type||'Dünger')}</select></div>
+          <div class="field"><label for="fe-form">Form</label>
+            <select id="fe-form"><option value=""></option>${opt(FERT_FORMS,f.form||'')}</select></div>
+        </div>
+        <div class="field full"><label for="fe-npk">NPK (N-P-K, wie auf der Packung)</label>
+          <input id="fe-npk" value="${esc(f.npk||'')}" placeholder="z. B. 3-2-5">
+          <small class="meta">Diese Zahlen entscheiden, welchen Dünger die App für eine Pflanze auswählt.</small></div>
+        <div class="field full"><label for="fe-dosage">Dosierung</label>
+          <textarea id="fe-dosage" rows="3">${esc(f.dosage||'')}</textarea></div>
+        <div class="field full"><label for="fe-note">Notiz</label>
+          <textarea id="fe-note" rows="3">${esc(f.note||'')}</textarea></div>
+        <div class="field full">
+          <label><input type="checkbox" id="fe-avail"${f.available===false?'':' checked'}> vorrätig</label><br>
+          <label><input type="checkbox" id="fe-self"${f.selfmade?' checked':''}> selbst angesetzt</label>
+        </div>
+        <div class="capture-row" style="margin-top:12px">
+          <button class="btn primary" onclick="saveFertilizer('${f.id}')">Speichern</button>
+          <button class="btn soft" onclick="closeFertFile()">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+function closeFertFile(){const el=document.getElementById('fertFile');if(!el)return;
+  el.classList.add('hidden');el.innerHTML=''}
+
+function saveFertilizer(id){
+  const f=fertilizers().find(x=>x.id===id);if(!f)return;
+  const val=k=>(document.getElementById(k)?.value||'').trim();
+  const name=val('fe-name');
+  if(!name)return alert('Der Name darf nicht leer sein.');
+  const before={name:f.name,type:f.type,form:f.form,npk:f.npk,dosage:f.dosage,note:f.note,
+    available:f.available!==false,selfmade:!!f.selfmade};
   f.name=name;
-  const ty=(prompt(`Was ist es? ${FERT_TYPES.join(' / ')}`,f.type||'Dünger')||'').trim();
-  if(FERT_TYPES.indexOf(ty)!==-1)f.type=ty;
-  f.form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,f.form||'')||'').trim();
-  f.npk=(prompt('NPK laut Packung:',f.npk||'')||'').trim();
-  f.dosage=(prompt('Dosierung laut Packung:',f.dosage||'')||'').trim();
-  delete f.needsReview;   // the user has now said what it is; stop flagging it
-  save();renderFertilizers();toast('Dünger aktualisiert');
+  const ty=val('fe-type');if(FERT_TYPES.indexOf(ty)!==-1)f.type=ty;
+  f.form=val('fe-form');f.npk=val('fe-npk');f.dosage=val('fe-dosage');f.note=val('fe-note');
+  const avail=!!document.getElementById('fe-avail')?.checked;
+  if(avail!==(f.available!==false)){f.available=avail;f.outSince=avail?'':today()}
+  f.selfmade=!!document.getElementById('fe-self')?.checked;
+  delete f.needsReview;
+
+  /* What changed, in the user's terms - the run reads this to know what it is
+     being corrected about, exactly as `userEdited` works on a plant. */
+  const changed=[];
+  if(before.name!==f.name)changed.push(`Name: „${f.name}"`);
+  if(before.type!==f.type)changed.push(`Art: ${f.type}`);
+  if(before.npk!==f.npk)changed.push(`NPK: ${f.npk||'(leer)'}`);
+  if(before.dosage!==f.dosage)changed.push('Dosierung korrigiert');
+  if(before.form!==f.form)changed.push(`Form: ${f.form||'(leer)'}`);
+  if(before.note!==f.note)changed.push('Notiz geändert');
+  if(before.available!==avail)changed.push(avail?'wieder vorrätig':'aufgebraucht');
+  if(before.selfmade!==f.selfmade)changed.push(f.selfmade?'selbst angesetzt':'gekauft');
+  if(changed.length)f.userEdited={at:new Date().toISOString(),what:changed.join('; ')};
+
+  /* A corrected fertilizer is not a local fact. Its NPK decides which product
+     the app picks for a plant, so changing it can invalidate a care plan built
+     on the old numbers. Every plant whose schedule names this product goes back
+     on the run's list for a fresh, whole-plan look - which is the holistic
+     check, reached through the mechanism that already exists for plants. */
+  if(changed.length){
+    const touched=[...new Set(defs.filter(d=>d.fertId===f.id).map(d=>d.plantId))];
+    touched.forEach(pid=>markPlantEdited(pid,`Dünger korrigiert: ${f.name} (${changed.join('; ')})`));
+    if(touched.length)state.history.unshift({date:today(),taskId:'fertilizer',plantId:touched[0],
+      title:`Dünger korrigiert: ${f.name}`,note:changed.join('; ')});
+  }
+
+  save();closeFertFile();renderFertilizers();
+  toast(changed.length?'Gespeichert – die KI berücksichtigt es beim nächsten Lauf':'Keine Änderung');
 }
 
 async function deleteFertilizer(id){
@@ -1321,12 +1409,25 @@ function importFertilizerList(){
   toast(`${added} übernommen${skipped?`, ${skipped} übersprungen (Dublette oder ohne Namen)`:''}`);
 }
 
+/* Two shelves, not one. `Dünger` feeds a plant; Algenkalk and Antikalk sit next
+   to them, get photographed with them, and feed nothing. Keeping them in one
+   list made the useful list longer without making it more useful. */
 function renderFertilizers(){
-  const box=document.getElementById('fertList');if(!box)return;
-  const list=fertilizers();
+  const isFeed=f=>(f.type||'Dünger')==='Dünger';
+  renderFertGroup('fertList',fertilizers().filter(isFeed),
+    'Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen. Fotografiere die Packung – die KI liest Sorte, NPK und Dosierung selbst ab.');
+  renderFertGroup('miscList',fertilizers().filter(f=>!isFeed(f)),
+    'Nichts erfasst. Hierher gehört, was im Schuppen steht, aber nicht düngt: Kalk, Wasseraufbereiter, Bodenhilfsstoffe. Die KI zieht es als Kontext heran, empfiehlt es aber nie als Nahrung.');
   const cnt=document.getElementById('fertCount');
-  if(cnt){const n=feedsOnHand().length;cnt.textContent=list.length?`${list.length} erfasst · ${n} einsetzbar`:''}
-  if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen. Fotografiere die Packung – die KI liest Sorte, NPK und Dosierung selbst ab.</div>`;return}
+  if(cnt){const n=feedsOnHand().length,all=fertilizers().filter(isFeed).length;
+    cnt.textContent=all?`${all} erfasst · ${n} einsetzbar`:''}
+  const mc=document.getElementById('miscCount');
+  if(mc){const n=fertilizers().filter(f=>!isFeed(f)).length;mc.textContent=n?`${n} erfasst`:''}
+}
+
+function renderFertGroup(boxId,list,emptyText){
+  const box=document.getElementById(boxId);if(!box)return;
+  if(!list.length){box.innerHTML=`<div class="empty">${emptyText}</div>`;return}
   box.innerHTML=list.map(f=>{
     const keys=fertPhotoKeys(f.id),img=photoCache[keys[0]],out=f.available===false;
     const tags=[
@@ -1337,16 +1438,20 @@ function renderFertilizers(){
     ].filter(Boolean).join('');
     const row=(k,v)=>v?`<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`:'';
     const facts=row('NPK',f.npk)+row('Dosierung',f.dosage)+row('Notiz',f.note);
+    /* Tapping a photo shows it. It used to DELETE it behind a confirm dialog,
+       which is the wrong verb for the obvious gesture - and on a label you
+       mostly want to zoom in and read the small print. */
     return `<article class="plant-card ${out?'fert-out':''}">
-      <div class="pc-photo" onclick="setFertilizerPhoto('${f.id}')" title="Foto der Packung aufnehmen">
+      <div class="pc-photo" onclick="${img?`showPhoto('${keys[0]}','${f.id}')`:`setFertilizerPhoto('${f.id}')`}"
+           title="${img?'Foto groß ansehen':'Foto der Packung aufnehmen'}">
         ${img?`<img src="${img}" alt="${esc(f.name)}">`
              :`<div class="pc-empty">Kein Foto<br><small>tippen zum Aufnehmen</small></div>`}
         ${out?`<span class="pc-health">aufgebraucht</span>`:''}
         ${keys.length>1?`<span class="pc-health" style="left:auto;right:8px">${keys.length} Fotos</span>`:''}
       </div>
       ${keys.length>1?`<div class="fert-strip">${keys.slice(1).map(k=>
-        `<img src="${photoCache[k]}" alt="weitere Seite" title="Tippen zum Löschen"
-              onclick="deleteFertilizerPhoto('${k}','${f.id}')">`).join('')}</div>`:''}
+        `<img src="${photoCache[k]}" alt="weitere Seite" title="Foto groß ansehen"
+              onclick="showPhoto('${k}','${f.id}')">`).join('')}</div>`:''}
       <div class="pc-body">
         <h3>${esc(f.name)}</h3>
         ${tags?`<div class="fert-tags">${tags}</div>`:''}
@@ -1362,6 +1467,22 @@ function renderFertilizers(){
       </div>
     </article>`}).join('');
 }
+
+/* Full-screen photo. The label is the source of truth for dosage and NPK, and
+   a 52-pixel thumbnail is unreadable - this is where you actually check whether
+   the KI read the pack correctly. Deleting lives in here too, so the destructive
+   action needs a deliberate second tap rather than owning the first one. */
+function showPhoto(key,fertId){
+  const img=photoCache[key];if(!img)return;
+  const el=document.getElementById('lightbox');if(!el)return;
+  el.innerHTML=`<button class="lb-close" onclick="closePhoto()" aria-label="Schließen">&times;</button>
+    <img src="${img}" alt="Foto">
+    ${fertId?`<button class="btn lb-del" onclick="deleteFertilizerPhoto('${key}','${fertId}');closePhoto()">Dieses Foto löschen</button>`:''}`;
+  el.classList.remove('hidden');
+}
+function closePhoto(){const el=document.getElementById('lightbox');if(!el)return;
+  el.classList.add('hidden');el.innerHTML=''}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePhoto()});
 
 /* ------------------------------------------------------- KI proposals ------- */
 /* A proposal is something the AI suggests but must not do on its own: a new
@@ -1938,7 +2059,7 @@ function switchView(v){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
   try{sessionStorage.setItem(LS_VIEW,v)}catch(e){}
   if(v==='plants')renderPlants();
-  if(v==='duenger')renderFertilizers();
+  if(v==='duenger'||v==='diverses')renderFertilizers();
 }
 function restoreView(){
   let v='';try{v=sessionStorage.getItem(LS_VIEW)||''}catch(e){}
@@ -2259,7 +2380,7 @@ async function buildDossierPayload(includePhotos){
       .map(k=>gmDrivePhotoName(k,photoCache[k]));
     return {id:f.id,name:f.name,type:f.type||'Dünger',form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
       selfmade:!!f.selfmade,available:f.available!==false,outSince:f.outSince||'',
-      needsReview:!!f.needsReview,
+      needsReview:!!f.needsReview,userEdited:f.userEdited||null,
       photos:files,driveFile:files[0]||''};
   });
   const payload={
