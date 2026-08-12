@@ -44,7 +44,13 @@ unter „Scheduled" nirgends. Sie ist eine **Claude-Code-Cloud-Routine**:
 
 - Oberfläche: <https://claude.ai/code/routines>
 - Name: „Garten-Manager Tagesdiagnose", id `trig_01WGicrr1NgzQ11gYRMcxT6w`
-- Cron `20 4 * * *` (UTC) = 06:20 Wien, Konto riahi@iiasa.ac.at
+- Cron `0 2 * * *` (**UTC**) = 04:00 Wien in der Sommerzeit. Der Cron folgt der
+  Zeitumstellung NICHT: ab Ende Oktober läuft er um 03:00 Wien, bis jemand ihn
+  auf `0 3 * * *` zieht. Dazu kommen ein paar Minuten Stagger der Plattform.
+- Modell: `claude-opus-5`. Der Lauf ist urteilslastig — Foto gegen Verlauf lesen,
+  zwanzig Stopp-Signale gleichzeitig halten, Kleingedrucktes von einer gewölbten
+  Flasche entziffern. Sonnet hat das am 12. August nicht zuverlässig getragen.
+- Konto riahi@iiasa.ac.at
 - Aus Claude Code erreichbar über das `RemoteTrigger`-Tool (`/schedule`)
 
 Das steht hier so ausführlich, weil das Suchen danach einmal eine Stunde
@@ -319,6 +325,17 @@ verschiebt den pH in die falsche Richtung. `Bodenhilfsstoff` und
 (hartes Gießwasser, saurer Boden), aber sie erfüllen nie eine Düngeempfehlung.
 
 ### Neue Dünger vom Foto erkennen
+
+**Höchstens vier Dünger je Lauf.** Alles andere in diesem Ablauf ist gedeckelt —
+zwölf Fotos, sechs Pflanzen —, und die Dünger-Erkennung war es zuerst nicht.
+Ein Nutzer, der seinen Schuppen an einem Nachmittag durchfotografiert, liefert
+damit siebzehn Produkte und fünfundfünfzig Bilder in einen einzigen Lauf: genau
+die unbegrenzte Arbeitsmenge, an der die Läufe vom 8. August gescheitert sind.
+Vier Packungen sind rund zwölf Bilder und passen bequem.
+
+Bleiben welche offen, ist das kein Problem, sondern der Normalfall: nenn im
+Bericht, wie viele noch warten. Der nächste Lauf nimmt sie — `needsReview`
+bleibt gesetzt, bis sie erkannt sind, und die Schleife konvergiert von selbst.
 
 Fotografiert der Nutzer eine Packung, legt die App sofort einen Eintrag an:
 `needsReview: true`, Name „Neuer Dünger (wird erkannt)", `driveFile` gesetzt,

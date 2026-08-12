@@ -467,6 +467,27 @@
       || String(a).localeCompare(String(b)));
   }
 
+  /* The daily run writes this file with a language model, and a model that has
+     spent all day writing prose sometimes escapes JSON the way it escapes
+     markdown: `\[`, `\<`, `\_`. None of those are valid JSON escapes, so
+     JSON.parse throws on the whole document and every entry in it is lost -
+     eighteen correctly identified fertilizers, in the case that prompted this.
+
+     Repairing is the right call rather than demanding perfection from the
+     writer: the content is fine, only the quoting is wrong, and a stricter
+     prompt cannot be enforced. But a silent repair would be its own version of
+     the same bug, so the caller says so out loud. */
+  function parseDiagnoseDoc(text) {
+    try { return JSON.parse(text); } catch (e) {}
+    const repaired = String(text).replace(/\\(?!["\\/bfnrtu])/g, '');
+    try {
+      const doc = JSON.parse(repaired);
+      if (doc && typeof doc === 'object') doc.__repaired = true;
+      return doc;
+    } catch (e) { return null; }
+  }
+  let lastDiagError = '';
+
   // Upload photos that are new or changed since the last sync. Photos deleted
   // in the app are deliberately left in Drive — they are the history. The
   // in-flight guard keeps overlapping pushes from double-creating files.
@@ -859,8 +880,22 @@
     found.sort((a, b) => (b.modifiedTime || '').localeCompare(a.modifiedTime || ''));
     for (const f of found) {
       let doc = null;
-      try { doc = JSON.parse(await (await apiFetch('https://www.googleapis.com/drive/v3/files/' + f.id + '?alt=media')).text()); }
-      catch (e) { console.warn('KI-Diagnose-Datei unlesbar:', e); continue; }
+      try {
+        const raw = await (await apiFetch('https://www.googleapis.com/drive/v3/files/' + f.id + '?alt=media')).text();
+        doc = parseDiagnoseDoc(raw);
+      } catch (e) { doc = null; console.warn('KI-Diagnose-Datei nicht abrufbar:', e); }
+      if (!doc) {
+        /* A console warning is not a report. Until now an unreadable inbox file
+           was logged and skipped, so a run could do a full day's work, write it
+           out, and have every entry silently discarded - which is exactly what
+           happened on 12 Aug, twice, before anyone noticed. */
+        lastDiagError = 'Eine KI-Diagnose-Datei war unlesbar und wurde übersprungen.';
+        try { toast('Eine KI-Diagnose-Datei ist beschädigt und wurde übersprungen'); } catch (e2) {}
+        continue;
+      }
+      if (doc.__repaired) {
+        try { toast('KI-Diagnose enthielt fehlerhafte Zeichen - repariert gelesen'); } catch (e2) {}
+      }
       if (!doc || !Array.isArray(doc.entries)) continue;
       for (const e of doc.entries) {
         if (!e || !e.id || applied[e.id]) continue;
@@ -1059,6 +1094,7 @@
   // a bug silently destroys data, so it must be testable without a live Drive.
   window.CloudSync = { init, onLocalChange, renderStatus, _mergeStates: mergeStates,
     _syncPhotos: syncPhotos, _photoUploadQueue: photoUploadQueue,
+    _parseDiagnoseDoc: parseDiagnoseDoc,
     _photoIndex: () => photoIndex, _photosPending: () => photosPending,
     _uploadPhotoFile: uploadPhotoFile, _dedupePhotoIndex: dedupePhotoIndex,
     _backfillPhotoFiles: backfillPhotoFiles, _fetchMissingPhotos: fetchMissingPhotos,
