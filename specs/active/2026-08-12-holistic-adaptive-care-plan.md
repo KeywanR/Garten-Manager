@@ -51,6 +51,20 @@ This refines rather than contradicts the standing preference ("select one best o
 4. **Equivalent-product question.** A lighter proposal type: one question, two named products, the answer stored on the plan so subsequent feedings use the chosen one.
 5. **Both prompt copies.** Evaluate the whole care system together; propose it as scheduled tasks carrying products; mark the grouping; apply the choice rule above; account for what the feeding log shows was already applied this season; a purchase may be part of a plan, flagged as such.
 
+## Slices
+
+Built in order, each landing in a working state rather than one PR that has to be right all at once.
+
+**Slice 1 - task schema and memory (built, v57, not shipped).** Tasks carry `fertId`, `dose`, `planId`, `planTitle`; `rebuildCatalog` preserves them; `changeTasks` treats unspecified as unchanged; `buildPlantDossier` exports a structured `feedingLog`. The card prefers a task's own product over the v56 resolver. Nothing user-visible changes except that a planned task names its own feed.
+
+The hazard found while building it, worth keeping: `rebuildCatalog` does not mutate tasks, it RECONSTRUCTS each one from a fixed field list, and runs on nearly every state change. Any field it forgets is destroyed within seconds of being written. A regression test in `test-photo-identity.js` now fails if the four fields are dropped again; it was verified to fail by reintroducing the bug, not merely written.
+
+**SHIPPING GATE for slice 1.** Both prompt copies must be updated in the same sitting the slice merges - not before, because they describe the contract of the DEPLOYED app, and not after, because that is the drift this project keeps paying for. They need: tasks in `addTasks`/`changeTasks` may carry `fertId`, `dose`, `planId`, `planTitle`; `feedingLog` exists per plant and is the record of what actually went on; unspecified fields on a `changeTasks` entry mean unchanged, not cleared.
+
+**Slice 2 - the regime.** The run proposes a whole feeding plan as several scheduled tasks in one `proposePlan`, each with product, dose and interval, sharing a `planId`. Prompt work is the bulk of this.
+
+**Slice 3 - choices.** The A/B surface for competing plans, and the lighter one-question form for genuinely equivalent products, with the answer stored on the plan so later feedings adapt.
+
 ## Risks
 
 | Risk | Cover |

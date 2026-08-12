@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v56';
+const APP_BUILD='v58';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -158,7 +158,16 @@ function rebuildCatalog(){
     byId.set(t.id,{id:t.id,plantId:t.plantId,title:t.title||(base&&base.title)||'Pflege',
       interval:Number(t.interval)||(base&&base.interval)||14,
       months:Array.isArray(t.months)&&t.months.length?t.months.filter(m=>m>=1&&m<=12):((base&&base.months)||ALL_MONTHS),
-      note:t.note!==undefined?t.note:((base&&base.note)||''),optional:!!t.optional});
+      note:t.note!==undefined?t.note:((base&&base.note)||''),optional:!!t.optional,
+      /* A task can now carry the product it is meant to be done WITH, and the
+         plan it belongs to. This rebuild reconstructs every task from scratch on
+         nearly every state change, so anything not named here is destroyed
+         within seconds of being written — a confirmed care plan would lose its
+         fertilizers before the user ever saw them. */
+      fertId:t.fertId||(base&&base.fertId)||'',
+      dose:t.dose!==undefined?t.dose:((base&&base.dose)||''),
+      planId:t.planId||(base&&base.planId)||'',
+      planTitle:t.planTitle||(base&&base.planTitle)||''});
   });
   // Retired tasks disappear from the plan entirely, so initializeCareTasks
   // cannot quietly restart them on the next app open.
@@ -674,11 +683,16 @@ function taskHTML(d){
   const p=plant(d.plantId),s=taskState(d.id),started=!!state.tasks[d.id];
   const cls=started?classify(d):'new';
   const fert=fertilizerInfo(d,nextFor(d)||today());
-  const pick=fert?pickFertilizer(fert):null;
+  /* A task that carries its own product IS the answer: it came out of a care
+     plan the user confirmed, and letting the generic resolver second-guess it
+     would quietly undo that decision every time the season table disagreed.
+     The resolver only fills the gap where a task names nothing. */
+  const own=d.fertId?fertilizers().find(f=>f.id===d.fertId&&f.available!==false):null;
+  const pick=fert?(own?{choice:own,alts:[],need:'plan'}:pickFertilizer(fert)):null;
   const fertHTML=fert?`<div class="fert">${pick&&pick.choice
       ? `<b>🌿 Dünger: ${esc(pick.choice.name)}</b><br>
-         <span>Dosierung: ${esc(pick.choice.dosage||fert.dose)}</span>
-         <br><span class="fert-why">gewählt für: ${esc(fert.name)}${pick.choice.npk?` · NPK ${esc(pick.choice.npk)}`:''}</span>
+         <span>Dosierung: ${esc(d.dose||pick.choice.dosage||fert.dose)}</span>
+         <br><span class="fert-why">${own?'aus dem Pflegeplan':'gewählt für'}: ${esc(own?(d.planTitle||'Pflegeplan'):fert.name)}${pick.choice.npk?` · NPK ${esc(pick.choice.npk)}`:''}</span>
          ${pick.alts.length?`<br><span class="fert-why">sonst möglich: ${pick.alts.map(a=>esc(a.name)).join(', ')}</span>`:''}`
       : `<b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>
          <br><span class="fert-why">${fertilizers().length
@@ -703,6 +717,7 @@ function taskHTML(d){
   return `<article class="task ${cls}"><div>
     <h3>${esc(d.title)}</h3>
     <div class="meta">${meta}</div>
+    ${d.planTitle&&!fert?`<div class="meta">Teil von: ${esc(d.planTitle)}</div>`:''}
     ${d.note?`<div class="note">${esc(d.note)}</div>`:''}${fertHTML}${startHint}
    </div><div class="actions">${actions}</div></article>`;
 }
@@ -965,7 +980,8 @@ async function applyKiDiagnosis(e){
       }
       if(state.customTasks.some(x=>x.id===tid)||baseDefs.some(b=>b.id===tid))continue;
       state.customTasks.push({id:tid,plantId:e.plantId,title:t.title||'Pflege',
-        interval:Number(t.interval)||14,months:t.months,note:t.note||'',optional:!!t.optional});
+        interval:Number(t.interval)||14,months:t.months,note:t.note||'',optional:!!t.optional,
+        fertId:t.fertId||'',dose:t.dose||'',planId:t.planId||'',planTitle:t.planTitle||''});
       changed=true;
     }
   }
@@ -982,7 +998,11 @@ async function applyKiDiagnosis(e){
     if(adds.length||changes.length||removes.length){
       const lines=[];
       if(plan.reason)lines.push(plan.reason,'');
-      adds.forEach(t=>lines.push(`+ NEU: ${t.title||t.type}${t.interval?` (alle ${t.interval} Tage)`:''}${t.reason?` – ${t.reason}`:''}`));
+      const fertName=fid=>{const f=fertilizers().find(x=>x.id===fid);return f?f.name:''};
+      const withFert=t=>{const n=t.fertId?fertName(t.fertId):'';
+        return n?` [${n}${t.dose?`, ${t.dose}`:''}]`:''};
+      if(plan.planTitle)lines.push(`Plan: ${plan.planTitle}`,'');
+      adds.forEach(t=>lines.push(`+ NEU: ${t.title||t.type}${t.interval?` (alle ${t.interval} Tage)`:''}${withFert(t)}${t.reason?` – ${t.reason}`:''}`));
       changes.forEach(t=>{const cur=defs.find(x=>x.id===t.id);
         lines.push(`~ GEÄNDERT: ${(cur&&cur.title)||t.id}${t.interval?` – jetzt alle ${t.interval} Tage`:''}${t.reason?` – ${t.reason}`:''}`)});
       removes.forEach(t=>{const cur=defs.find(x=>x.id===t.id);
@@ -1127,6 +1147,21 @@ const feedsOnHand=()=>fertilizers().filter(f=>f.available!==false&&(f.type||'Dü
    what keeps these out of „Fotos ohne Pflanze": without it every pack shot
    would sit in the inbox asking which plant it belongs to, for ever. */
 const fertPhotoKey=id=>`duenger|${id}`;
+/* A label is three sides: the name on the front, the NPK on one panel, the
+   dosage on another — and on a bottle they are never in one frame. One photo per
+   product meant the run read whichever side happened to be photographed and had
+   to guess the rest, which is exactly where the first inventory went wrong.
+
+   The first photo keeps the plain `duenger|<id>` key so entries made before this
+   change need no migration; further photos append a timestamp. Matching is exact
+   key OR the `|` prefix, never a bare startsWith: `duenger|f-x` must not swallow
+   `duenger|f-xy`. */
+const fertPhotoKeys=id=>{
+  const base=fertPhotoKey(id),pre=`${base}|`;
+  return Object.keys(state.photoMeta||{})
+    .filter(k=>(k===base||k.indexOf(pre)===0)&&photoCache[k])
+    .sort();
+};
 
 async function addFertilizer(){
   const name=(prompt('Name des Düngers (z. B. „Compo Blaukorn"):')||'').trim();
@@ -1150,12 +1185,29 @@ async function addFertilizer(){
    Drive on the normal path and the run can actually open it. */
 async function setFertilizerPhoto(id){
   const f=fertilizers().find(x=>x.id===id);if(!f)return;
-  const file=await pickImage(true);
-  if(!file||!file.type.startsWith('image/'))return;
-  const data=await resizePhoto(file),key=fertPhotoKey(id);
-  await putPhoto(key,data);
-  state.photoMeta[key]={plantId:'',date:today(),caption:`Dünger: ${f.name}`,cover:false,kind:'duenger'};
-  save();renderFertilizers();toast('Foto gespeichert – wird beim nächsten Sync hochgeladen');
+  let added=0;
+  /* Loop rather than one-shot: standing at the shelf with the bottle already in
+     hand is the cheap moment to get the back of it too. Coming back later to
+     photograph the dosage panel is the thing that never happens. */
+  for(;;){
+    const file=await pickImage(true);
+    if(!file||!file.type.startsWith('image/'))break;
+    const data=await resizePhoto(file);
+    const key=fertPhotoKeys(id).length?`${fertPhotoKey(id)}|${Date.now()}`:fertPhotoKey(id);
+    await putPhoto(key,data);
+    state.photoMeta[key]={plantId:'',date:today(),
+      caption:`Dünger: ${f.name}${added?' (weitere Seite)':''}`,cover:false,kind:'duenger'};
+    added++;save();renderFertilizers();
+    if(!confirm(`${added} Foto${added===1?'':'s'} gespeichert.\n\nNoch eine Seite aufnehmen? Nützlich sind Vorderseite, NPK-Angabe und Dosierung.`))break;
+  }
+  if(added)toast(`${added} Foto${added===1?'':'s'} gespeichert – gehen beim nächsten Sync hoch`);
+}
+
+async function deleteFertilizerPhoto(key,id){
+  if(!confirm('Dieses Foto löschen?'))return;
+  try{await removePhoto(key)}catch(e){console.warn('Düngerfoto konnte nicht gelöscht werden',e)}
+  delete state.photoMeta[key];
+  save();renderFertilizers();toast('Foto gelöscht');
 }
 
 /* Brennnesseljauche is not a product, it is a bucket in the corner — and the
@@ -1210,7 +1262,11 @@ async function addFertilizerByPhoto(){
     type:'Dünger',form:'',npk:'',dosage:'',note:'',
     selfmade:false,available:true,outSince:'',needsReview:true}]);
   save();renderFertilizers();
-  toast('Foto gespeichert – die KI liest die Packung beim nächsten Lauf');
+  /* Offer the remaining sides straight away. The run can only read what it is
+     given, and NPK and dosage are almost never on the face of the pack. */
+  if(confirm('Foto gespeichert.\n\nWeitere Seiten aufnehmen? Die KI braucht NPK und Dosierung, und die stehen selten auf der Vorderseite.'))
+    await setFertilizerPhoto(id);
+  toast('Die KI liest die Packung beim nächsten Lauf');
 }
 
 function editFertilizer(id){
@@ -1229,9 +1285,10 @@ function editFertilizer(id){
 async function deleteFertilizer(id){
   const f=fertilizers().find(x=>x.id===id);if(!f)return;
   if(!confirm(`„${f.name}" aus dem Bestand entfernen?`))return;
-  const key=fertPhotoKey(id);
-  if(photoCache[key]){try{await removePhoto(key)}catch(e){console.warn('Düngerfoto konnte nicht gelöscht werden',e)}}
-  delete state.photoMeta[key];
+  for(const key of fertPhotoKeys(id)){
+    try{await removePhoto(key)}catch(e){console.warn('Düngerfoto konnte nicht gelöscht werden',e)}
+    delete state.photoMeta[key];
+  }
   state.fertilizers=fertilizers().filter(x=>x.id!==id);
   save();renderFertilizers();toast('Dünger entfernt');
 }
@@ -1271,7 +1328,7 @@ function renderFertilizers(){
   if(cnt){const n=feedsOnHand().length;cnt.textContent=list.length?`${list.length} erfasst · ${n} einsetzbar`:''}
   if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen. Fotografiere die Packung – die KI liest Sorte, NPK und Dosierung selbst ab.</div>`;return}
   box.innerHTML=list.map(f=>{
-    const key=fertPhotoKey(f.id),img=photoCache[key],out=f.available===false;
+    const keys=fertPhotoKeys(f.id),img=photoCache[keys[0]],out=f.available===false;
     const tags=[
       f.type&&f.type!=='Dünger'?`<span class="mini">${esc(f.type)}</span>`:'',
       f.form?`<span class="mini">${esc(f.form)}</span>`:'',
@@ -1285,7 +1342,11 @@ function renderFertilizers(){
         ${img?`<img src="${img}" alt="${esc(f.name)}">`
              :`<div class="pc-empty">Kein Foto<br><small>tippen zum Aufnehmen</small></div>`}
         ${out?`<span class="pc-health">aufgebraucht</span>`:''}
+        ${keys.length>1?`<span class="pc-health" style="left:auto;right:8px">${keys.length} Fotos</span>`:''}
       </div>
+      ${keys.length>1?`<div class="fert-strip">${keys.slice(1).map(k=>
+        `<img src="${photoCache[k]}" alt="weitere Seite" title="Tippen zum Löschen"
+              onclick="deleteFertilizerPhoto('${k}','${f.id}')">`).join('')}</div>`:''}
       <div class="pc-body">
         <h3>${esc(f.name)}</h3>
         ${tags?`<div class="fert-tags">${tags}</div>`:''}
@@ -1293,6 +1354,7 @@ function renderFertilizers(){
                :`<div class="meta">Keine Angaben von der Packung</div>`}
         ${out?`<div class="pc-next">Aufgebraucht seit ${fmt(f.outSince||today())}. Wird nicht mehr empfohlen${f.selfmade?' – neu ansetzen dauert 2 bis 3 Wochen':''}.</div>`:''}
         <div class="pc-actions">
+          <button class="btn soft" onclick="setFertilizerPhoto('${f.id}')">+ Foto</button>
           <button class="btn ${out?'primary':'soft'}" onclick="toggleFertilizerStock('${f.id}')">${out?'Wieder da':'Aufgebraucht'}</button>
           <button class="btn soft" onclick="editFertilizer('${f.id}')">Ändern</button>
           <button class="btn soft link-danger" onclick="deleteFertilizer('${f.id}')">Entfernen</button>
@@ -1332,7 +1394,13 @@ async function confirmProposal(id){
       state.customTasks.push({id:t.id,plantId:cur.plantId,
         title:t.title||cur.title,interval:Number(t.interval)||cur.interval,
         months:Array.isArray(t.months)&&t.months.length?t.months:cur.months,
-        note:t.note!==undefined?t.note:cur.note,optional:!!cur.optional});
+        note:t.note!==undefined?t.note:cur.note,optional:!!cur.optional,
+        // Unspecified means unchanged, not cleared: a plan that only retunes an
+        // interval must not silently drop the product it was built around.
+        fertId:t.fertId!==undefined?t.fertId:(cur.fertId||''),
+        dose:t.dose!==undefined?t.dose:(cur.dose||''),
+        planId:t.planId!==undefined?t.planId:(cur.planId||''),
+        planTitle:t.planTitle!==undefined?t.planTitle:(cur.planTitle||'')});
       // A changed rhythm re-bases from today rather than keeping a due date
       // computed under the old interval.
       if(state.tasks[t.id]){const last=state.tasks[t.id].last||'';
@@ -2105,6 +2173,17 @@ function buildPlantDossier(id){
     currentHealth:healthFor(id),
     profile:profileFor(id),
     careSchedule:care,
+    /* What actually went on the plant, kept apart from the prose. `plantTimeline`
+       joins title, note and fertilizer into one sentence — fine to read, useless
+       to reason with. The run has to know that a slow-release went on in June and
+       is therefore still working in August, and it cannot recover that from a
+       string. Capped: the last 20 feedings answer every question worth asking,
+       and the dossier is already the run's biggest input. */
+    feedingLog:(state.history||[])
+      .filter(h=>h&&h.plantId===id&&h.fertilizer)
+      .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
+      .slice(0,20)
+      .map(h=>({date:h.date||'',product:h.fertilizer,task:h.title||'',note:h.note||''})),
     // Deliberately retired tasks — so a later run understands the plan already
     // changed and does not propose reinstating what was just stopped.
     suppressedTasks:suppressedFor(id).map(([tid,s])=>({id:tid,since:s.since,reason:s.reason||''})),
@@ -2172,11 +2251,16 @@ async function buildDossierPayload(includePhotos){
      reads the dose off the label, and naming a file it cannot open is worse
      than naming none, because it looks like evidence that was considered. */
   const fertilizerList=fertilizers().map(f=>{
-    const k=fertPhotoKey(f.id);
+    /* Every side that has actually reached Drive. `driveFile` stays as the first
+       one for older readers; `photos` is the real list, and the run must open all
+       of them — the dosage is routinely on a different panel from the NPK. */
+    const files=fertPhotoKeys(f.id)
+      .filter(k=>gmPhotoInDrive(k,photoCache[k]))
+      .map(k=>gmDrivePhotoName(k,photoCache[k]));
     return {id:f.id,name:f.name,type:f.type||'Dünger',form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
       selfmade:!!f.selfmade,available:f.available!==false,outSince:f.outSince||'',
       needsReview:!!f.needsReview,
-      driveFile:gmPhotoInDrive(k,photoCache[k])?gmDrivePhotoName(k,photoCache[k]):''};
+      photos:files,driveFile:files[0]||''};
   });
   const payload={
     format:'gartenmanager-ai-dossier',version:DATA_VERSION,generated:new Date().toISOString(),

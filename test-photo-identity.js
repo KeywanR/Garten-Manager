@@ -409,6 +409,58 @@ const img = (ch, n) => 'data:image/jpeg;base64,' + ch.repeat(n);
       staleExempt.length ? 'no longer read by the app: ' + staleExempt.join(', ') : '');
   }
 
+  /* ------------------------------------------------------------------------
+     A care plan survives rebuildCatalog.
+
+     Tasks carry the product they are meant to be done with (`fertId`, `dose`)
+     and the plan they belong to (`planId`, `planTitle`). rebuildCatalog does not
+     mutate tasks - it RECONSTRUCTS every one of them from a fixed field list,
+     and it runs on nearly every state change. Anything the reconstruction
+     forgets to name is destroyed within seconds of being written, so a care plan
+     the user confirmed would lose its fertilizers before it was ever acted on.
+     Exactly the class of silent loss this file exists for. */
+  section('A confirmed care plan survives rebuildCatalog');
+  {
+    const src = fs.readFileSync(APP_SRC, 'utf8');
+    const i = src.indexOf('function rebuildCatalog(');
+    let depth = 0, started = false, end = -1;
+    for (let j = i; j < src.length && i >= 0; j++) {
+      if (src[j] === '{') { depth++; started = true; }
+      else if (src[j] === '}') { depth--; if (started && depth === 0) { end = j + 1; break; } }
+    }
+    check('rebuildCatalog located in app.js', i >= 0 && end > i);
+
+    const ctx = {
+      console,
+      basePlants: [{ id: 'tomaten', name: 'Tomaten', cat: 'Gemüse' }],
+      baseDefs: [{ id: 'tomaten:duengen', plantId: 'tomaten', title: 'Düngen', interval: 14, months: [5, 6], note: '' }],
+      ALL_MONTHS: [1,2,3,4,5,6,7,8,9,10,11,12],
+      plants: [], defs: [],
+      refreshCatFilter() {},
+      state: {
+        customPlants: [],
+        suppressedTasks: {},
+        customTasks: [{
+          id: 'tomaten:duengen-fluessig', plantId: 'tomaten', title: 'Flüssig düngen',
+          interval: 7, months: [6, 7, 8, 9], note: '',
+          fertId: 'f-naturen-1', dose: '14 ml auf 2 l Wasser',
+          planId: 'plan-tomaten-2026', planTitle: 'Düngeplan Tomaten (Sommer 2026)',
+        }],
+      },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(src.slice(i, end) + '\nrebuildCatalog();', ctx);
+
+    const t = ctx.defs.find(d => d.id === 'tomaten:duengen-fluessig');
+    check('the planned task survives the rebuild', !!t);
+    const lost = t ? ['fertId', 'dose', 'planId', 'planTitle'].filter(f => !t[f]) : ['(task missing)'];
+    check('product and plan grouping survive the rebuild', lost.length === 0,
+      lost.length
+        ? 'dropped by rebuildCatalog: ' + lost.join(', ') +
+          '\n        rebuildCatalog rebuilds tasks field by field - add them there too.'
+        : '');
+  }
+
   console.log('\n' + (failures ? failures + ' FAILURE(S)' : 'all checks passed'));
   process.exit(failures ? 1 : 0);
 })();

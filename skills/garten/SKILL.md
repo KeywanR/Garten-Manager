@@ -99,12 +99,21 @@ Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
   `needsReassessment: true` — die App hat die beiden Zeitstempel dafür schon
   verglichen. `userEdited.what` sagt dir, *was* beigetragen wurde; `lastKiReview`
   ist reine Information.
+- je Pflanze `feedingLog` — **was tatsächlich auf die Pflanze gegangen ist**:
+  `[{date, product, task, note}]`, neueste zuerst, höchstens 20. Das ist nicht
+  dasselbe wie `timeline`, in der dieselbe Information zu einem Satz verklebt
+  ist. Nutze es: ein Langzeitdünger vom Juni wirkt im August noch, und zweimal
+  Stickstoff in einer Woche ist ein Schaden, kein Versehen
 - `unassignedPhotos[]` — importierte Fotos ohne Pflanze
 - `fertilizers[]` — **was der Nutzer tatsächlich besitzt**: `name`, `form`,
   `npk` und `dosage` wie auf der Packung, dazu `driveFile` mit dem Foto der
   Packung, sofern es schon in Drive liegt. Öffne das Foto, wenn du eine
   Dosierung brauchst: die Packung ist die Quelle, das Getippte nur eine
-  Zusammenfassung. Dazu `type` (`Dünger`, `Bodenhilfsstoff`,
+  Zusammenfassung. **`photos[]` enthält ALLE Seiten der Packung**, die schon in
+  Drive liegen — Vorderseite, NPK-Feld, Dosierung stehen fast nie im selben
+  Bild. Öffne sie alle, bevor du etwas über das Produkt behauptest; `driveFile`
+  ist nur die erste davon und bleibt aus Kompatibilitätsgründen bestehen. Dazu
+  `type` (`Dünger`, `Bodenhilfsstoff`,
   `Wasseraufbereitung`) und zwei Flags, die die Empfehlung entscheiden:
   **`available: false`** heißt aufgebraucht (seit `outSince`) — empfiehl es
   nicht, auch nicht „sobald wieder da"; **`selfmade: true`** heißt selbst
@@ -327,6 +336,13 @@ bestehenden Eintrag, du legst keinen an. Die App übernimmt die Felder, löscht
 `needsReview` und legt einen Vorschlag „Dünger erkannt" an, damit eine falsch
 gelesene Packung korrigiert und nicht stillschweigend geglaubt wird.
 
+**Sieh dir jede Seite an, die in `photos[]` steht**, bevor du antwortest. Die
+Dosierung steht regelmäßig auf einem anderen Panel als das NPK-Verhältnis, und
+aus einem einzigen Bild zu raten ist genau der Fehler, an dem die erste
+Bestandsliste gescheitert ist. Reicht das Vorhandene nicht, lass die fehlenden
+Felder leer und sag im Bericht, welche Seite fehlt — der Nutzer fotografiert sie
+nach.
+
 Nimm die Werte **von der Packung**, nicht aus dem Gedächtnis über das Produkt.
 Ist etwas nicht lesbar, lass das Feld leer statt zu raten: ein leeres
 Dosierungsfeld ist eine offene Frage, eine erfundene Dosierung ist ein Schaden.
@@ -391,6 +407,16 @@ dazukommt*, sondern auch *was so nicht mehr stimmt*. Deshalb immer den
   "removeTasks": [{"id":"tomaten:duengen","reason":"ab August keine N-Düngung"}]
 }
 ```
+
+**Eine Aufgabe kann tragen, WOMIT sie zu tun ist.** In `addTasks` und
+`changeTasks` sind zusätzlich erlaubt: `fertId` (eine id aus `fertilizers[]`),
+`dose` (die Dosis für genau diese Pflanze), sowie `planId` und `planTitle`, wenn
+mehrere Aufgaben zu einem gemeinsamen Plan gehören. Die App zeigt dann das
+Produkt direkt auf der Aufgabenkarte, statt selbst zu wählen.
+
+**Bei `changeTasks` heißt „nicht genannt" unverändert, nicht gelöscht.** Wer nur
+ein Intervall nachjustiert, darf das Produkt nicht mitreißen — lass die anderen
+Felder einfach weg.
 
 Prüfe bei jedem Vorschlag ausdrücklich den Bestand in `careSchedule`:
 
