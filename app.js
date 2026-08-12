@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v60';
+const APP_BUILD='v61';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -1137,8 +1137,15 @@ const FERT_FORMS=['flüssig','Granulat','Stäbchen','Kompost','sonstiges'];
    them, and neither feeds a plant. Without this distinction the rule „name a
    product from the list" lets the run answer a nitrogen deficiency with lime,
    which is not merely useless but moves the pH the wrong way. Only `Dünger`
-   may satisfy a feeding recommendation. */
-const FERT_TYPES=['Dünger','Bodenhilfsstoff','Wasseraufbereitung'];
+   may satisfy a feeding recommendation.
+
+   `Pflanzenstärkung` exists because a declared NPK is not proof of a fertilizer.
+   Schachtelhalmbrühe carries 0,5-0,15-1,5 on the label and is legally an
+   organic NPK product, but it is a silica tonic sprayed on LEAVES to harden
+   them against fungus — nutritionally it is a rounding error. Classifying it as
+   food meant it could be offered against a nitrogen deficiency, where it would
+   do nothing. Its advice belongs in `treatments`, never in `fertilizing`. */
+const FERT_TYPES=['Dünger','Pflanzenstärkung','Bodenhilfsstoff','Wasseraufbereitung'];
 const fertilizers=()=>state.fertilizers||[];
 /* What may actually be used to feed a plant today: a Dünger, not emptied out.
    Everything else in the shed is context, not an option. */
@@ -1269,17 +1276,98 @@ async function addFertilizerByPhoto(){
   toast('Die KI liest die Packung beim nächsten Lauf');
 }
 
+/* Everything the daily run actually reads, in one editable form.
+
+   It used to be four `prompt()` dialogs that could not reach `note`,
+   `available` or `selfmade`, and left no record that a human had corrected
+   anything - so the next identification was free to overwrite a correction with
+   its own reading of a blurry label. Editing has to be authoritative, or it is
+   not worth doing. */
 function editFertilizer(id){
   const f=fertilizers().find(x=>x.id===id);if(!f)return;
-  const name=(prompt('Name:',f.name)||'').trim();if(!name)return;
+  const el=document.getElementById('fertFile');if(!el)return;
+  const opt=(list,cur)=>list.map(v=>`<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
+  el.innerHTML=`<div class="pf-panel">
+    <div class="pf-head">
+      <div><h2>Dünger bearbeiten</h2>
+        <div class="meta">Was du hier änderst, gilt. Die KI überschreibt es nicht mehr.</div></div>
+      <button class="pf-close" onclick="closeFertFile()" aria-label="Schließen">&times;</button>
+    </div>
+    <div class="pf-body">
+      <div class="fp">
+        <div class="field full"><label for="fe-name">Name</label>
+          <input id="fe-name" value="${esc(f.name||'')}"></div>
+        <div class="grid2">
+          <div class="field"><label for="fe-type">Art</label>
+            <select id="fe-type">${opt(FERT_TYPES,f.type||'Dünger')}</select></div>
+          <div class="field"><label for="fe-form">Form</label>
+            <select id="fe-form"><option value=""></option>${opt(FERT_FORMS,f.form||'')}</select></div>
+        </div>
+        <div class="field full"><label for="fe-npk">NPK (N-P-K, wie auf der Packung)</label>
+          <input id="fe-npk" value="${esc(f.npk||'')}" placeholder="z. B. 3-2-5">
+          <small class="meta">Diese Zahlen entscheiden, welchen Dünger die App für eine Pflanze auswählt.</small></div>
+        <div class="field full"><label for="fe-dosage">Dosierung</label>
+          <textarea id="fe-dosage" rows="3">${esc(f.dosage||'')}</textarea></div>
+        <div class="field full"><label for="fe-note">Notiz</label>
+          <textarea id="fe-note" rows="3">${esc(f.note||'')}</textarea></div>
+        <div class="field full">
+          <label><input type="checkbox" id="fe-avail"${f.available===false?'':' checked'}> vorrätig</label><br>
+          <label><input type="checkbox" id="fe-self"${f.selfmade?' checked':''}> selbst angesetzt</label>
+        </div>
+        <div class="capture-row" style="margin-top:12px">
+          <button class="btn primary" onclick="saveFertilizer('${f.id}')">Speichern</button>
+          <button class="btn soft" onclick="closeFertFile()">Abbrechen</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  el.classList.remove('hidden');
+}
+function closeFertFile(){const el=document.getElementById('fertFile');if(!el)return;
+  el.classList.add('hidden');el.innerHTML=''}
+
+function saveFertilizer(id){
+  const f=fertilizers().find(x=>x.id===id);if(!f)return;
+  const val=k=>(document.getElementById(k)?.value||'').trim();
+  const name=val('fe-name');
+  if(!name)return alert('Der Name darf nicht leer sein.');
+  const before={name:f.name,type:f.type,form:f.form,npk:f.npk,dosage:f.dosage,note:f.note,
+    available:f.available!==false,selfmade:!!f.selfmade};
   f.name=name;
-  const ty=(prompt(`Was ist es? ${FERT_TYPES.join(' / ')}`,f.type||'Dünger')||'').trim();
-  if(FERT_TYPES.indexOf(ty)!==-1)f.type=ty;
-  f.form=(prompt(`Form? ${FERT_FORMS.join(' / ')}`,f.form||'')||'').trim();
-  f.npk=(prompt('NPK laut Packung:',f.npk||'')||'').trim();
-  f.dosage=(prompt('Dosierung laut Packung:',f.dosage||'')||'').trim();
-  delete f.needsReview;   // the user has now said what it is; stop flagging it
-  save();renderFertilizers();toast('Dünger aktualisiert');
+  const ty=val('fe-type');if(FERT_TYPES.indexOf(ty)!==-1)f.type=ty;
+  f.form=val('fe-form');f.npk=val('fe-npk');f.dosage=val('fe-dosage');f.note=val('fe-note');
+  const avail=!!document.getElementById('fe-avail')?.checked;
+  if(avail!==(f.available!==false)){f.available=avail;f.outSince=avail?'':today()}
+  f.selfmade=!!document.getElementById('fe-self')?.checked;
+  delete f.needsReview;
+
+  /* What changed, in the user's terms - the run reads this to know what it is
+     being corrected about, exactly as `userEdited` works on a plant. */
+  const changed=[];
+  if(before.name!==f.name)changed.push(`Name: „${f.name}"`);
+  if(before.type!==f.type)changed.push(`Art: ${f.type}`);
+  if(before.npk!==f.npk)changed.push(`NPK: ${f.npk||'(leer)'}`);
+  if(before.dosage!==f.dosage)changed.push('Dosierung korrigiert');
+  if(before.form!==f.form)changed.push(`Form: ${f.form||'(leer)'}`);
+  if(before.note!==f.note)changed.push('Notiz geändert');
+  if(before.available!==avail)changed.push(avail?'wieder vorrätig':'aufgebraucht');
+  if(before.selfmade!==f.selfmade)changed.push(f.selfmade?'selbst angesetzt':'gekauft');
+  if(changed.length)f.userEdited={at:new Date().toISOString(),what:changed.join('; ')};
+
+  /* A corrected fertilizer is not a local fact. Its NPK decides which product
+     the app picks for a plant, so changing it can invalidate a care plan built
+     on the old numbers. Every plant whose schedule names this product goes back
+     on the run's list for a fresh, whole-plan look - which is the holistic
+     check, reached through the mechanism that already exists for plants. */
+  if(changed.length){
+    const touched=[...new Set(defs.filter(d=>d.fertId===f.id).map(d=>d.plantId))];
+    touched.forEach(pid=>markPlantEdited(pid,`Dünger korrigiert: ${f.name} (${changed.join('; ')})`));
+    if(touched.length)state.history.unshift({date:today(),taskId:'fertilizer',plantId:touched[0],
+      title:`Dünger korrigiert: ${f.name}`,note:changed.join('; ')});
+  }
+
+  save();closeFertFile();renderFertilizers();
+  toast(changed.length?'Gespeichert – die KI berücksichtigt es beim nächsten Lauf':'Keine Änderung');
 }
 
 async function deleteFertilizer(id){
@@ -2292,7 +2380,7 @@ async function buildDossierPayload(includePhotos){
       .map(k=>gmDrivePhotoName(k,photoCache[k]));
     return {id:f.id,name:f.name,type:f.type||'Dünger',form:f.form||'',npk:f.npk||'',dosage:f.dosage||'',note:f.note||'',
       selfmade:!!f.selfmade,available:f.available!==false,outSince:f.outSince||'',
-      needsReview:!!f.needsReview,
+      needsReview:!!f.needsReview,userEdited:f.userEdited||null,
       photos:files,driveFile:files[0]||''};
   });
   const payload={
