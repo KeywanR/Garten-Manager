@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v55';
+const APP_BUILD='v56';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -240,6 +240,86 @@ function fertilizerInfo(d,date=today()){
  if(plan.late && month>=plan.late.from) return {...plan.late,switched:true};
  if(plan.early && month<=plan.early.until) return plan.early;
  return plan.all||plan.late||plan.early;
+}
+
+/* ------------------------------------------------- Bedarf -> Produkt -------- */
+/* `fertilizerPlans` names a KIND of feed („kaliumbetonter Tomatendünger") and a
+   rough dose. That is the horticultural requirement, and it is deliberately
+   product-free: it has to hold for anyone. But a requirement is not an
+   instruction. Standing in the garden you need a bottle and a number, and until
+   now the card printed the category and left the matching to the user's head —
+   the fallback literally read „Passender organischer Dünger", which names
+   nothing at all.
+
+   So: classify what the plan is ASKING FOR, then score what is actually in the
+   shed against it and pick ONE. Alternatives are named in passing, never as a
+   list to choose from — a choice handed back to the user is the job undone. */
+
+function fertilizerNeed(req){
+  const s=`${req?.name||''} ${req?.note||''}`.toLowerCase();
+  if(/kalium/.test(s))                      return 'K';      // Frucht- und Blühphase
+  if(/blattgrün|stickstoff|vergilb/.test(s))return 'N';
+  if(/brennnessel/.test(s))                 return 'N';      // Jauche ist stickstoffbetont
+  if(/kräuter|mager|kein dünger|sehr wenig/.test(s)) return 'mild';
+  if(/langzeit/.test(s))                    return 'slow';
+  return 'balanced';
+}
+
+/* „3-3-5" / „5-1.5-0.5" / „0-20-15" -> [N,P,K]. Anything unparseable scores as
+   unknown rather than zero, so a product with no analysis on the pack is not
+   mistaken for one containing nothing. */
+function npkOf(f){
+  const m=String(f.npk||'').match(/(\d+(?:[.,]\d+)?)\D+(\d+(?:[.,]\d+)?)\D+(\d+(?:[.,]\d+)?)/);
+  if(!m)return null;
+  return m.slice(1,4).map(x=>parseFloat(String(x).replace(',','.')));
+}
+
+/* Words that appear in every second product name and every second plan line.
+   Without this list „Dünger" alone matches everything and the explicit-name rule
+   below fires for all of them, which is the same as having no rule. */
+const FERT_STOPWORDS=['dünger','düngen','pflanzen','garten','biogarten','natürlich',
+  'organisch','organischer','organische','mineralisch','flüssig','flüssigdünger'];
+
+/* If the plan NAMES something that is actually in the shed — Brennnesseljauche is
+   the everyday case, a „Tomatendünger" for tomatoes another — that is the answer.
+   No amount of NPK arithmetic beats the plan and the label agreeing. */
+function namedInPlan(req,f){
+  const hay=`${req?.name||''} ${req?.note||''}`.toLowerCase();
+  return (String(f.name||'').toLowerCase().match(/[a-zäöüß]{6,}/g)||[])
+    .filter(w=>FERT_STOPWORDS.indexOf(w)===-1)
+    .some(w=>hay.indexOf(w)!==-1);
+}
+
+/* Scores are bounded to roughly 0-10 so no single term can run away with the
+   choice. The earlier version scored raw NPK differences and duly recommended a
+   0-20-15 mineral PK for potted tomatoes: the highest potassium in the shed, and
+   wrong — a feed with no nitrogen at all is not what a fruiting plant lives on. */
+function scoreFertilizer(f,need,req){
+  if(req&&namedInPlan(req,f))return 100;
+  const v=npkOf(f);
+  let s=v?0:-2;                                        // no analysis: usable, but a guess
+  if(v){
+    const [n,p,k]=v,sum=(n+p+k)||1;
+    if(need==='K')        s=(n===0?-6:0)+10*(k/sum)+(k>n?2:0);
+    else if(need==='N')   s=10*(n/sum)+(n>k?2:0);
+    else if(need==='mild')s=10-sum/2;                  // gentle means little, not much
+    else if(need==='slow')s=4-Math.abs(n-k)/2;
+    else                  s=10-10*Math.abs(n-k)/sum;   // balanced
+  }
+  if(need==='slow'&&/granulat|stäbchen/i.test(f.form||''))s+=6;
+  if(need==='mild'&&/flüssig/i.test(f.form||''))s+=2;   // easier to underdose
+  if(f.dosage)s+=1;                                     // a dose we can actually print
+  return s;
+}
+
+/* Returns {choice, alts[], need} — choice is null when the shed holds nothing
+   usable, which is itself worth saying out loud rather than papering over. */
+function pickFertilizer(req){
+  const need=fertilizerNeed(req),pool=feedsOnHand();
+  if(!pool.length)return {choice:null,alts:[],need};
+  const ranked=pool.map(f=>({f,s:scoreFertilizer(f,need,req)}))
+    .sort((a,b)=>b.s-a.s||String(a.f.name).localeCompare(String(b.f.name)));
+  return {choice:ranked[0].f,alts:ranked.slice(1,3).map(r=>r.f),need};
 }
 
 /* -------------------------------------------------------------- state ------- */
@@ -594,7 +674,17 @@ function taskHTML(d){
   const p=plant(d.plantId),s=taskState(d.id),started=!!state.tasks[d.id];
   const cls=started?classify(d):'new';
   const fert=fertilizerInfo(d,nextFor(d)||today());
-  const fertHTML=fert?`<div class="fert"><b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}${feedsOnHand().length?`<br><span>Im Bestand: ${feedsOnHand().map(f=>esc(f.name)).join(', ')}</span>`:''}</div>`:'';
+  const pick=fert?pickFertilizer(fert):null;
+  const fertHTML=fert?`<div class="fert">${pick&&pick.choice
+      ? `<b>🌿 Dünger: ${esc(pick.choice.name)}</b><br>
+         <span>Dosierung: ${esc(pick.choice.dosage||fert.dose)}</span>
+         <br><span class="fert-why">gewählt für: ${esc(fert.name)}${pick.choice.npk?` · NPK ${esc(pick.choice.npk)}`:''}</span>
+         ${pick.alts.length?`<br><span class="fert-why">sonst möglich: ${pick.alts.map(a=>esc(a.name)).join(', ')}</span>`:''}`
+      : `<b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>
+         <br><span class="fert-why">${fertilizers().length
+             ? 'Nichts Passendes im Bestand verfügbar – im Reiter „Dünger\u201c ergänzen oder Packung fotografieren.'
+             : 'Noch kein Bestand erfasst – im Reiter „Dünger\u201c eintragen, dann steht hier ein konkretes Produkt.'}</span>`}
+    ${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}</div>`:'';
   const due=started?'':initialDueFor(d);
   const dueTxt=started?'':(diff(due)===0?'heute':fmt(due));
   const cycleTxt=d.interval>=365?'in einem Jahr':`in ${d.interval} Tagen`;
