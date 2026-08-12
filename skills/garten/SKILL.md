@@ -375,15 +375,35 @@ Felder leer und sag im Bericht, welche Seite fehlt — der Nutzer fotografiert s
 nach.
 
 **Nicht nur Neues, auch Lückenhaftes.** Ein Eintrag kommt in die Erkennung,
-wenn `needsReview: true` gesetzt ist ODER wenn `npk` oder `dosage` leer sind und
-kein `userEdited` daraufliegt. Sonst bliebe eine Lücke für immer stehen: die
+wenn `needsReview: true` gesetzt ist ODER wenn `npk` oder `dosage` leer sind —
+**auch dann, wenn `userEdited` daraufliegt.** Eine Korrektur des Nutzers schützt
+die Felder, die er GESETZT hat; sie ist kein Grund, die Felder liegen zu lassen,
+die er LEER gelassen hat. Wer die Art richtigstellt und das NPK offen lässt, will
+das NPK trotzdem haben.
+
+Bei einem Eintrag mit `userEdited` schickst du deshalb **nur die Felder, die
+gerade leer sind** — alle anderen lässt du im JSON komplett weg. Weggelassen
+heißt unangetastet; ein mitgeschicktes Feld überschreibt. Sonst bliebe eine Lücke für immer stehen: die
 Substanz gilt als erkannt, obwohl der Wert fehlt, den die App zum Auswählen
 braucht. Auch hier höchstens vier je Lauf.
 
 Damit das terminiert: findest du zu einer Lücke **nichts Belastbares**, schreib
-genau das in `note` (etwa „NPK online nicht auffindbar, Stand 2026-08-12"). Der
-nächste Lauf sieht daran, dass die Suche schon gelaufen ist, und versucht es
-nicht jeden Morgen von neuem.
+genau das in `note`. Der nächste Lauf sieht daran, dass die Suche schon lief.
+
+**Aber „nicht auffindbar" ist eine starke Behauptung, und sie hält für immer.**
+Sie ist erst erlaubt, wenn du MINDESTENS geprüft hast:
+
+1. alle Seiten in `photos[]`,
+2. die Herstellerseite,
+3. **mindestens zwei Händlerlistings** (Gartenshop, Onlinehandel).
+
+Und du nennst in `note`, **welche Quellen du geprüft hast** — nicht nur, dass du
+gesucht hast. Sonst kann ein späterer Lauf nicht erkennen, ob die Suche gründlich
+oder bloß kurz war, und eine vorschnelle Fehlanzeige wird zur festen Tatsache.
+
+Am 12. August ist genau das passiert: BIOVIN wurde als „NPK nicht auffindbar"
+abgehakt, nachdem nur biovin.at geprüft war. Ein Händlerlisting führte die Werte
+0,61-0,11-0,09 offen aus. Stufe 3 der Rangfolge existiert genau dafür.
 
 **Recherchier, was die Packung nicht hergibt.** Fehlen NPK, Dosierung oder
 Anwendungszweck auf den Fotos, such danach — Herstellerseite, Datenblatt,
