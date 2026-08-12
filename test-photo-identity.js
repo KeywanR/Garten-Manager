@@ -461,6 +461,46 @@ const img = (ch, n) => 'data:image/jpeg;base64,' + ch.repeat(n);
         : '');
   }
 
+  /* ------------------------------------------------------------------------
+     A diagnose file with markdown escaping still gets read.
+
+     The daily run writes this file with a language model, and a model that has
+     been writing German prose all night sometimes escapes JSON the way it
+     escapes markdown: \[ , \< , \_ . None is a valid JSON escape, so
+     JSON.parse rejects the entire document. On 12 Aug that discarded two files
+     containing eighteen correctly identified fertilizers, and the app said
+     nothing because the failure was a console.warn.
+
+     The repair must fix exactly that and nothing else - in particular it must
+     not touch \n, \" or \uXXXX, or it would corrupt every observation text. */
+  section('A diagnose file with markdown escaping still gets read');
+  {
+    const src = fs.readFileSync(CLOUD_SRC, 'utf8');
+    const m = src.match(/function parseDiagnoseDoc\(text\) \{[\s\S]*?\n  \}/);
+    check('parseDiagnoseDoc located in cloud-sync.js', !!m);
+    let parse = null;
+    if (m) { const ctx = { console }; vm.createContext(ctx); vm.runInContext(m[0] + '\nglobalThis.__p = parseDiagnoseDoc;', ctx); parse = ctx.__p; }
+
+    const broken = '{"format":"x","entries": \\[ {"id":"a","note":"pH \\< 5,5"} \\]}';
+    check('plain JSON.parse rejects the real-world file',
+      (() => { try { JSON.parse(broken); return false; } catch (e) { return true; } })());
+
+    const doc = parse ? parse(broken) : null;
+    check('the repair recovers the entries', !!(doc && Array.isArray(doc.entries) && doc.entries.length === 1));
+    check('the repair flags itself rather than hiding', !!(doc && doc.__repaired));
+    check('escaped text survives with the backslash dropped',
+      !!(doc && doc.entries[0].note === 'pH < 5,5'), doc ? doc.entries[0].note : '(no doc)');
+
+    // Valid escapes must be left alone, or every observation text gets mangled.
+    const good = parse ? parse('{"entries":[{"id":"b","t":"a\\nb \\"q\\" \\u00e4"}]}') : null;
+    check('valid escapes are untouched',
+      !!(good && good.entries[0].t === 'a\nb "q" \u00e4'), good ? JSON.stringify(good.entries[0].t) : '(no doc)');
+    check('a clean file is not marked as repaired', !!(good && !good.__repaired));
+
+    check('unrecoverable input returns null rather than throwing',
+      parse ? parse('{ this is not json at all') === null : false);
+  }
+
   console.log('\n' + (failures ? failures + ' FAILURE(S)' : 'all checks passed'));
   process.exit(failures ? 1 : 0);
 })();
