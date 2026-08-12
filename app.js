@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v59';
+const APP_BUILD='v60';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -1321,12 +1321,25 @@ function importFertilizerList(){
   toast(`${added} übernommen${skipped?`, ${skipped} übersprungen (Dublette oder ohne Namen)`:''}`);
 }
 
+/* Two shelves, not one. `Dünger` feeds a plant; Algenkalk and Antikalk sit next
+   to them, get photographed with them, and feed nothing. Keeping them in one
+   list made the useful list longer without making it more useful. */
 function renderFertilizers(){
-  const box=document.getElementById('fertList');if(!box)return;
-  const list=fertilizers();
+  const isFeed=f=>(f.type||'Dünger')==='Dünger';
+  renderFertGroup('fertList',fertilizers().filter(isFeed),
+    'Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen. Fotografiere die Packung – die KI liest Sorte, NPK und Dosierung selbst ab.');
+  renderFertGroup('miscList',fertilizers().filter(f=>!isFeed(f)),
+    'Nichts erfasst. Hierher gehört, was im Schuppen steht, aber nicht düngt: Kalk, Wasseraufbereiter, Bodenhilfsstoffe. Die KI zieht es als Kontext heran, empfiehlt es aber nie als Nahrung.');
   const cnt=document.getElementById('fertCount');
-  if(cnt){const n=feedsOnHand().length;cnt.textContent=list.length?`${list.length} erfasst · ${n} einsetzbar`:''}
-  if(!list.length){box.innerHTML=`<div class="empty">Noch kein Dünger erfasst. Ohne Bestand kann die KI nur allgemein „düngen" raten statt ein Produkt mit Dosierung zu nennen. Fotografiere die Packung – die KI liest Sorte, NPK und Dosierung selbst ab.</div>`;return}
+  if(cnt){const n=feedsOnHand().length,all=fertilizers().filter(isFeed).length;
+    cnt.textContent=all?`${all} erfasst · ${n} einsetzbar`:''}
+  const mc=document.getElementById('miscCount');
+  if(mc){const n=fertilizers().filter(f=>!isFeed(f)).length;mc.textContent=n?`${n} erfasst`:''}
+}
+
+function renderFertGroup(boxId,list,emptyText){
+  const box=document.getElementById(boxId);if(!box)return;
+  if(!list.length){box.innerHTML=`<div class="empty">${emptyText}</div>`;return}
   box.innerHTML=list.map(f=>{
     const keys=fertPhotoKeys(f.id),img=photoCache[keys[0]],out=f.available===false;
     const tags=[
@@ -1337,16 +1350,20 @@ function renderFertilizers(){
     ].filter(Boolean).join('');
     const row=(k,v)=>v?`<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`:'';
     const facts=row('NPK',f.npk)+row('Dosierung',f.dosage)+row('Notiz',f.note);
+    /* Tapping a photo shows it. It used to DELETE it behind a confirm dialog,
+       which is the wrong verb for the obvious gesture - and on a label you
+       mostly want to zoom in and read the small print. */
     return `<article class="plant-card ${out?'fert-out':''}">
-      <div class="pc-photo" onclick="setFertilizerPhoto('${f.id}')" title="Foto der Packung aufnehmen">
+      <div class="pc-photo" onclick="${img?`showPhoto('${keys[0]}','${f.id}')`:`setFertilizerPhoto('${f.id}')`}"
+           title="${img?'Foto groß ansehen':'Foto der Packung aufnehmen'}">
         ${img?`<img src="${img}" alt="${esc(f.name)}">`
              :`<div class="pc-empty">Kein Foto<br><small>tippen zum Aufnehmen</small></div>`}
         ${out?`<span class="pc-health">aufgebraucht</span>`:''}
         ${keys.length>1?`<span class="pc-health" style="left:auto;right:8px">${keys.length} Fotos</span>`:''}
       </div>
       ${keys.length>1?`<div class="fert-strip">${keys.slice(1).map(k=>
-        `<img src="${photoCache[k]}" alt="weitere Seite" title="Tippen zum Löschen"
-              onclick="deleteFertilizerPhoto('${k}','${f.id}')">`).join('')}</div>`:''}
+        `<img src="${photoCache[k]}" alt="weitere Seite" title="Foto groß ansehen"
+              onclick="showPhoto('${k}','${f.id}')">`).join('')}</div>`:''}
       <div class="pc-body">
         <h3>${esc(f.name)}</h3>
         ${tags?`<div class="fert-tags">${tags}</div>`:''}
@@ -1362,6 +1379,22 @@ function renderFertilizers(){
       </div>
     </article>`}).join('');
 }
+
+/* Full-screen photo. The label is the source of truth for dosage and NPK, and
+   a 52-pixel thumbnail is unreadable - this is where you actually check whether
+   the KI read the pack correctly. Deleting lives in here too, so the destructive
+   action needs a deliberate second tap rather than owning the first one. */
+function showPhoto(key,fertId){
+  const img=photoCache[key];if(!img)return;
+  const el=document.getElementById('lightbox');if(!el)return;
+  el.innerHTML=`<button class="lb-close" onclick="closePhoto()" aria-label="Schließen">&times;</button>
+    <img src="${img}" alt="Foto">
+    ${fertId?`<button class="btn lb-del" onclick="deleteFertilizerPhoto('${key}','${fertId}');closePhoto()">Dieses Foto löschen</button>`:''}`;
+  el.classList.remove('hidden');
+}
+function closePhoto(){const el=document.getElementById('lightbox');if(!el)return;
+  el.classList.add('hidden');el.innerHTML=''}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closePhoto()});
 
 /* ------------------------------------------------------- KI proposals ------- */
 /* A proposal is something the AI suggests but must not do on its own: a new
@@ -1938,7 +1971,7 @@ function switchView(v){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
   try{sessionStorage.setItem(LS_VIEW,v)}catch(e){}
   if(v==='plants')renderPlants();
-  if(v==='duenger')renderFertilizers();
+  if(v==='duenger'||v==='diverses')renderFertilizers();
 }
 function restoreView(){
   let v='';try{v=sessionStorage.getItem(LS_VIEW)||''}catch(e){}
