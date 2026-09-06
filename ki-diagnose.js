@@ -19,7 +19,8 @@
    nur die Darstellung ist umgezogen.
 
    Abhängigkeiten (app.js): state, save, renderAll, toast, photoCache, plant,
-   plants, today, esc, fmt, healthFor, openPlantFile.
+   plants, today, esc, escLinked, fmt, healthFor, openPlantFile,
+   groupKiFindings.
    ========================================================================== */
 (function () {
 
@@ -32,7 +33,18 @@
 
   /* ----------------------------------------------------------- queries ----- */
   const findings = () => (state.observations || []).filter(o => o.type === 'KI-Diagnose');
-  const unread = () => findings().filter(o => !(state.kiRead || {})[o.id]);
+  /* Ein Bericht je Pflanze und Tag. Der Lauf schreibt je Foto einen Befund, und
+     drei Fotos einer Tomate wurden zu drei Karten, die einander zur Hälfte
+     wiederholten — das Zusammenfassen blieb am Leser hängen. Gruppiert wird nur
+     hier in der Ansicht; jeder Befund behält im Speicher seine eigene id, denn
+     daran hängen die Gelesen-Marker und die Zusammenführung über zwei Geräte
+     (siehe groupKiFindings in app.js).
+
+     Über Tage hinweg wird nichts zusammengelegt: ein am nächsten Morgen erneut
+     bestätigtes Problem ist eine Bestätigung und gehört gelesen. */
+  const reports = () => groupKiFindings(findings());
+  const isUnread = g => g.ids.some(id => !(state.kiRead || {})[id]);
+  const unread = () => reports().filter(isUnread);
   // Photos imported from the gallery arrive without a plant. They stay here
   // until assigned — an unassigned photo is invisible in every plant file.
   const unassigned = () => Object.entries(state.photoMeta || {})
@@ -40,14 +52,24 @@
     .sort((a, b) => (b[1].date || '').localeCompare(a[1].date || ''));
 
   /* -------------------------------------------------------- read state ----- */
-  function markRead(id) { state.kiRead = state.kiRead || {}; state.kiRead[id] = true; save(); renderAll(); }
+  // ids kommen als komma-getrennte Liste, weil eine Karte mehrere Befunde
+  // zusammenfasst — „gelesen" gilt dann für alle, sonst bliebe der Zähler stehen.
+  function markRead(ids) {
+    state.kiRead = state.kiRead || {};
+    String(ids).split(',').filter(Boolean).forEach(id => { state.kiRead[id] = true; });
+    save(); renderAll();
+  }
   function markAllRead() {
     state.kiRead = state.kiRead || {};
     findings().forEach(o => { state.kiRead[o.id] = true; });
     save(); renderAll(); toast('Alle Diagnosen als gelesen markiert');
   }
-  function openPlant(id, obsId) {
-    if (obsId) { state.kiRead = state.kiRead || {}; state.kiRead[obsId] = true; save(); }
+  function openPlant(id, obsIds) {
+    if (obsIds) {
+      state.kiRead = state.kiRead || {};
+      String(obsIds).split(',').filter(Boolean).forEach(o => { state.kiRead[o] = true; });
+      save();
+    }
     renderAll(); openPlantFile(id);
   }
 
@@ -81,7 +103,7 @@
 
   /* ---------------------------------------------------------- render ------- */
   function render() {
-    const fs = findings().slice(0, 80), nUnread = unread().length;
+    const fs = reports().slice(0, 80), nUnread = unread().length;
     const props = (state.kiProposals || []).filter(p => p.status === 'pending');
 
     // The badge counts things that want an answer from you: unread diagnoses
@@ -105,7 +127,7 @@
         return `<article class="task late"><div>
           <h3>${esc(p.title)}</h3>
           <div class="meta">${fmt(p.date)}${pl ? ` · ${esc(pl.name)}` : ''} · ${TYPE_LABEL[p.type] || 'Vorschlag'}</div>
-          ${p.detail ? `<div class="note" style="white-space:pre-line">${esc(p.detail)}</div>` : ''}
+          ${p.detail ? `<div class="note" style="white-space:pre-line">${escLinked(p.detail)}</div>` : ''}
         </div><div class="actions">
           <button class="btn primary" onclick="confirmProposal('${p.id}')">${p.type === 'note' ? 'Verstanden' : p.type === 'purchase' ? 'Vormerken' : 'Bestätigen'}</button>
           ${p.type === 'newPlant' && pl ? `<button class="btn soft" onclick="openPlantFile('${p.plantId}')">Bearbeiten</button>` : ''}
@@ -115,15 +137,16 @@
       }).join('')}</div>` : '';
 
     const fHTML = fs.length ? `<div class="task-list">${fs.map(o => {
-      const isNew = !(state.kiRead || {})[o.id];
+      const isNew = isUnread(o);
       const p = plant(o.plantId);
+      const ids = o.ids.join(',');
       return `<article class="task ${isNew ? 'soon' : ''}"><div>
         <h3>${esc(p ? p.name : o.plantId)} ${isNew ? '<span class="mini">neu</span>' : ''}</h3>
-        <div class="meta">${fmt(o.date)} · KI-Diagnose${p ? ` · ${esc(healthFor(o.plantId).status)}` : ''}</div>
-        <div class="note">${esc(o.text)}</div>
+        <div class="meta">${fmt(o.date)} · KI-Diagnose${p ? ` · ${esc(healthFor(o.plantId).status)}` : ''}${o.ids.length > 1 ? ` · ${o.ids.length} Befunde zusammengefasst` : ''}</div>
+        <div class="note" style="white-space:pre-line">${escLinked(o.text)}</div>
       </div><div class="actions">
-        <button class="btn primary" onclick="KiDiagnose.openPlant('${o.plantId}','${o.id}')">Zur Pflanze</button>
-        ${isNew ? `<button class="btn" onclick="KiDiagnose.markRead('${o.id}')">Gelesen</button>` : ''}
+        <button class="btn primary" onclick="KiDiagnose.openPlant('${o.plantId}','${ids}')">Zur Pflanze</button>
+        ${isNew ? `<button class="btn" onclick="KiDiagnose.markRead('${ids}')">Gelesen</button>` : ''}
       </div></article>`;
     }).join('')}</div>`
       : `<div class="empty">Noch keine Diagnosen. Fotografiere Pflanzen in der App – beim nächsten

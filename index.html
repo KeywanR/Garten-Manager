@@ -17,6 +17,8 @@
   --honey:#b8801f; --honey-bg:#fcf1d8;      /* due / attention */
   --berry:#8a3b52; --berry-bg:#f7e4ea;      /* late / problem */
   --sky:#3a6485; --sky-bg:#e6eef6;          /* soon */
+  --iris:#5a4e86; --iris-bg:#eae7f2;        /* Schutz / Ein- und Auswintern */
+  --stone:#6f7568; --stone-bg:#e9ece6;      /* Kontrollen */
   --shadow:0 6px 22px rgba(30,55,35,.09);
   --radius:16px;
 }
@@ -80,6 +82,73 @@ a{color:var(--leaf)}
 .fert{margin-top:10px;padding:10px 12px;border-radius:11px;background:var(--leaf-soft);
   border:1px solid #cfe1c9;font-size:.9rem}
 .fert b{color:var(--leaf-ink)} .fert .switch{display:block;margin-top:4px;color:var(--honey);font-weight:700}
+/* Ausserhalb der Düngeperiode: kein Grün, weil hier nichts zu tun ist. */
+.fert.dormant{background:#eef0ec;border-color:#d5dbd3}
+.fert.dormant b{color:var(--muted)}
+.task.dormant{border-left-color:#b9c2b7;opacity:.85}
+/* Ein Name im Text, der zu seiner Seite führt: Pflanze grün, Produkt honigfarben. */
+.ref{border:0;background:transparent;padding:0;margin:0;font:inherit;color:var(--leaf-ink);
+  font-weight:750;cursor:pointer;text-decoration:underline;text-underline-offset:2px;
+  text-decoration-style:dotted;text-decoration-thickness:1.5px}
+.ref:hover{text-decoration-style:solid}
+.ref-fert{color:var(--honey)}
+/* ---------------------------------------------------- Gartenjahr-Leiste ----
+   Eine Zeile je Pflegeaufgabe, zwölf Monate über die volle Breite. Balken mit
+   Takt-Strichen = wiederkehrender Rhythmus; Umriss mit Nadel = einmal im Jahr.
+   Entwurf: specs/active/2026-09-06-gartenjahr-leiste-design.md */
+.gj{display:flex;flex-direction:column;gap:9px}
+.gj-rows{display:flex;flex-direction:column;gap:10px}
+.gj-row{display:flex;flex-direction:column;gap:3px}
+.gj-rowlabel{font-size:.78rem;color:var(--ink);display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+.gj-track{position:relative;height:19px;border-radius:6px;background:var(--paper);
+  border:1px solid var(--line);overflow:hidden}
+.gj-grid{position:absolute;inset:0;display:grid;grid-template-columns:repeat(12,1fr);pointer-events:none}
+.gj-grid i{border-left:1px solid color-mix(in srgb,var(--line) 60%,transparent)}
+.gj-grid i:first-child{border-left:0}
+.gj-grid i.q{border-left-color:var(--line)}
+.gj-seg{position:absolute;top:0;bottom:0;border-radius:5px;cursor:pointer;
+  transition:filter .12s,box-shadow .12s}
+.gj-seg:hover{filter:brightness(.94)}
+.gj-seg:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--ink) 30%,transparent)}
+/* im Plan, aber noch nicht aktiviert */
+.gj-seg.idle{opacity:.55}
+.gj-seg.idle::after{content:"";position:absolute;inset:0;border-radius:5px;
+  background:repeating-linear-gradient(135deg,rgba(255,255,255,.85) 0 3px,transparent 3px 6px)}
+.gj-seg.opt{border:1px dashed color-mix(in srgb,var(--ink) 42%,transparent);background-clip:padding-box}
+/* einmal im Jahr: Umriss statt Fläche */
+.gj-seg.once{background:transparent!important;border:1.5px solid var(--seg-ink);opacity:.9}
+.gj-pin{position:absolute;top:50%;translate:-50% -50%;width:11px;height:11px;border-radius:50%;
+  border:2.5px solid var(--card);pointer-events:none}
+.gj-tick{position:absolute;top:3px;bottom:3px;width:1px;background:rgba(255,255,255,.62);pointer-events:none}
+/* Düngerwechsel: Kerbe plus Raute auf der Kante. Zwei Tönungen allein läsen
+   sich als Schattierung, nicht als Umstellung. */
+.gj-switch{position:absolute;top:-1px;bottom:-1px;width:3px;translate:-50% 0;
+  background:var(--card);z-index:2;pointer-events:none}
+.gj-switch::after{content:"";position:absolute;left:50%;top:50%;width:7px;height:7px;
+  translate:-50% -50%;rotate:45deg;background:var(--seg-ink);box-shadow:0 0 0 1.5px var(--card)}
+.gj-now{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--honey);border-radius:2px;
+  pointer-events:none;z-index:3;box-shadow:0 0 0 2px color-mix(in srgb,var(--honey) 22%,transparent)}
+.gj-months{display:grid;grid-template-columns:repeat(12,1fr)}
+.gj-months span{text-align:center;font-size:.66rem;font-weight:700;color:var(--muted);
+  padding:1px 0;border-left:1px solid transparent}
+.gj-months span.q{border-left-color:var(--line)}
+.gj-months span.now{color:var(--leaf-ink);background:var(--leaf-soft);border-radius:5px}
+/* Der Balken sagt WANN, diese Zeile sagt WOMIT. */
+.gj-cap{display:flex;flex-wrap:wrap;gap:2px 12px;margin-top:3px;font-size:.7rem;
+  line-height:1.35;color:var(--muted)}
+.gj-cap-i{display:inline-flex;align-items:baseline;gap:5px;min-width:0}
+.gj-cap-i b{color:var(--ink);font-weight:700;white-space:nowrap}
+.gj-sw{width:11px;height:8px;border-radius:3px;display:inline-block;flex:none}
+.gj-cap-i .gj-sw{position:relative;top:1px;border:1px solid rgba(0,0,0,.12)}
+.gj-legend{display:flex;flex-wrap:wrap;gap:5px 12px;font-size:.7rem;color:var(--muted);
+  padding-top:5px;border-top:1px solid var(--line)}
+.gj-legend b{display:inline-flex;align-items:center;gap:5px;font-weight:600}
+/* Ziel eines Sprungs aus der Leiste kurz hervorheben. */
+@keyframes taskflash{0%{box-shadow:0 0 0 3px color-mix(in srgb,var(--honey) 70%,transparent)}
+  100%{box-shadow:0 0 0 3px transparent}}
+.task.flash{animation:taskflash 1.5s ease-out}
+@media(prefers-reduced-motion:reduce){.task.flash{animation:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--honey) 60%,transparent)}}
 .actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
 .btn{font:inherit;border:1px solid #b8c5b9;background:var(--card);border-radius:11px;padding:9px 12px;
   font-weight:750;cursor:pointer;color:var(--ink)}
