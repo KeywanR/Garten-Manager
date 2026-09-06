@@ -1,6 +1,9 @@
 # Split photos out of the sync payload
 
-**Status:** Active - implemented, awaiting per-device backups before merge
+**Status:** SHIPPED 2026-08-07 (PR #41, merged as `cfe39db`; live from v50). The
+backup gate below was satisfied by an iPad export before merge. Kept in `active/`
+only until the first real two-device sync confirms the fetch path; move to
+`completed/` after that.
 **Date:** 2026-08-07
 **Type:** refactor
 **Scope:** Stop embedding base64 images in `gartenmanager-data.json`. The images already exist as individual files in the Drive `photos/` folder; the copy inside the data blob is pure duplication and is the whole reason the file reached 52 MB.
