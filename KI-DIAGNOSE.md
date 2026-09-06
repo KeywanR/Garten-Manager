@@ -58,8 +58,18 @@ Sync-Zeile an.
 
 Regeln:
 
-- **`id` muss global eindeutig sein** (Konvention: `ki-<datum>-<plantId>-<n>`);
+- **`id` muss global eindeutig sein** (Konvention: `ki-<datum>-<plantId>`);
   jede id wird genau einmal angewandt.
+- **Ein Eintrag je Pflanze und Lauf.** Mehrere Fotos derselben Pflanze kommen in
+  einen Eintrag; die Dateinamen stehen dann in `sourcePhotos` (Array) statt in
+  `sourcePhoto`. Beide Felder sind reines Gedächtnis des Laufs — die App liest
+  sie nicht, sie stehen in den Diagnosedateien, damit ein Foto nie zweimal
+  ausgewertet wird. Befunde derselben Pflanze am selben Tag fasst die App in der
+  Ansicht ohnehin zu einem Bericht zusammen; über Tage hinweg nie.
+- **Düngen nur innerhalb `feedingCalendar`.** Die KI-Akte nennt je Pflanze das
+  Düngefenster (`months`, `open`, `resumes`). Ist es zu, gehört keine Dosierung
+  in den Eintrag, sondern der Satz, wann wieder gedüngt wird. Die App terminiert
+  außerhalb des Fensters selbst nichts mehr und zeigt dort auch kein Produkt an.
 - `plantId` = Pflanzen-id aus der KI-Akte (`plants[].plant.id`).
 - `status` exakt einer der App-Werte: `🟢 Gesund`, `🟡 Beobachten`,
   `🟠 Behandlung läuft`, `🔴 Handlungsbedarf`. Andere Werte werden von

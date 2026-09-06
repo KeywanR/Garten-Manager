@@ -12,7 +12,7 @@ const DATA_VERSION=12, DB_NAME='gartenmanager_storage', DB_VERSION=2;
    made a stale device impossible to spot. Keep this in step with CACHE in
    service-worker.js; the app compares the two at runtime and says so if they
    disagree. */
-const APP_BUILD='v61';
+const APP_BUILD='v63';
 
 /* ---------------------------------------------------------------- plants ---- */
 /* Built-in garden inventory. User-added plants live in state.customPlants /
@@ -240,15 +240,234 @@ const fertilizerPlans={
  felsenbirne:{all:{name:'Organischer Langzeitdünger für Beeren- oder Obstgehölze',dose:'schwach',note:'Genügsam; nach Juni meist keine weitere Düngung nötig.'}},
  weichsel:{early:{name:'Organischer Obstbaum-Langzeitdünger oder Hornspäne',dose:'Frühjahrsgabe',until:5,note:'Hornspäne nur im Frühjahr.'},late:{name:'Kaliumbetonter Obstbaumdünger',dose:'schwach',from:6,note:'Ab August keine stickstoffreiche Düngung mehr.'}},
  clematis:{all:{name:'Clematis- oder Blühpflanzendünger',dose:'nach Herstellerangabe',note:'Kaliumbetont während der Blüte; auf feuchte Erde geben.'}},
- hecke:{all:{name:'Organischer Langzeitdünger',dose:'nur leicht, bei Bedarf',note:'Etablierter Liguster braucht kaum Dünger.'}}
+ hecke:{all:{name:'Organischer Langzeitdünger',dose:'nur leicht, bei Bedarf',note:'Etablierter Liguster braucht kaum Dünger.'}},
+ /* Rasen düngt über zwei getrennte Aufgaben mit eigenen Fenstern; die Phasen
+    hier sagen nur, welche der beiden gerade dran ist. Ohne diesen Eintrag fiel
+    der Rasen auf „Passender organischer Dünger" zurück, was für Frühjahr und
+    Herbst dieselbe — und für den Herbst die falsche — Antwort gewesen wäre. */
+ rasen:{phases:[
+   {from:3,to:8,name:'Stickstoffbetonter Frühjahrs-Rasendünger',dose:'nach Herstellerangabe, auf feuchten Boden',note:'Treibt die Narbe an und schließt schwache Stellen.'},
+   {from:9,to:2,name:'Kaliumbetonter Herbst-Rasendünger',dose:'nach Herstellerangabe',note:'Kalium härtet die Halme gegen Frost; ab September kein Stickstoff mehr.'}]}
 };
+
+/* --------------------------------------------------------- Düngekalender ---- */
+/* Zwei Dinge, sauber getrennt.
+
+   Das FENSTER — in welchen Monaten diese Pflanze überhaupt Nahrung aufnimmt —
+   sind die `months` der Düngeaufgabe. Nutzer und KI können sie ändern, also ist
+   die Aufgabe die einzige Quelle dafür.
+
+   Der PLAN oben sagt nur, WOMIT innerhalb des Fensters gedüngt wird und WANN das
+   Produkt wechselt. Beides zusammen ist der Kalender.
+
+   Warum das überhaupt zwei Sachen sind: bis v61 rechnete `complete()` einfach
+   Datum + Intervall. Eine Düngung des Winterschneeballs (Fenster März–Juni, 42
+   Tage) am 20. Juni terminierte die nächste auf den 1. August — die App hat also
+   selbst zu einer Gabe geraten, Monate nachdem das Gehölz aufgehört hatte,
+   etwas damit anzufangen. */
+const MONTH_ABBR=['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+const FEED_TASK=/dueng/;                       // duengen, fruehjahrsduenger, herbstduenger
+const isFeedTask=d=>!!d&&FEED_TASK.test(String(d.id).split(':')[1]||'');
+const monthsOf=d=>(d&&Array.isArray(d.months)&&d.months.length)?d.months:ALL_MONTHS;
+
+/* Ein Fenster ist eine Monatsmenge, keine Spanne: [12,1,2] ist gültig und
+   überschreitet den Jahreswechsel. Deshalb wird vorwärts gelaufen statt
+   verglichen. Liegt der Monat des Datums im Fenster, bleibt das Datum genau
+   stehen; sonst wird auf den Ersten des nächsten passenden Monats geschoben. */
+function clampToWindow(date,months){
+  if(!isDateString(date))return date;
+  const win=(Array.isArray(months)&&months.length)?months:ALL_MONTHS;
+  if(win.length===12)return date;
+  const d=parse(date);
+  for(let i=0;i<14;i++){
+    if(win.includes(d.getMonth()+1))
+      return i===0?date:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+    d.setDate(1);d.setMonth(d.getMonth()+1);
+  }
+  return date;
+}
+const scheduleNext=(d,from)=>clampToWindow(add(from,d.interval),monthsOf(d));
+
+/* Zusammenhängende Monatsläufe: [3,4,5,6] -> [[3,6]], [12,1,2] -> [[1,2],[12,12]].
+   Ein Fenster über den Jahreswechsel ergibt bewusst ZWEI Läufe — auf einer Achse
+   Januar→Dezember ist es zwei Stücke, und die Jahresleiste zeichnet es auch so.
+   Eine Quelle für den Text und für die Grafik, damit die beiden nicht driften. */
+function monthRuns(months){
+  const win=[...new Set((months||[]).filter(m=>m>=1&&m<=12))].sort((a,b)=>a-b),out=[];
+  win.forEach(m=>{const last=out[out.length-1];
+    if(last&&m===last[1]+1)last[1]=m;else out.push([m,m])});
+  return out;
+}
+/* Monatsspanne als Text: [3,4,5,6] -> „Mär–Jun", [4] -> „Apr",
+   [3,4,8,9] -> „Mär–Apr, Aug–Sep". */
+function monthRangeLabel(months){
+  const win=[...new Set((months||[]).filter(m=>m>=1&&m<=12))];
+  if(!win.length||win.length===12)return 'ganzjährig';
+  return monthRuns(win).map(([a,b])=>
+    a===b?MONTH_ABBR[a-1]:`${MONTH_ABBR[a-1]}–${MONTH_ABBR[b-1]}`).join(', ');
+}
+
+/* Die alten `early`/`late`/`all`-Einträge sind schon Phasen, nur mit impliziten
+   Grenzen. Hier bekommen sie explizite — keine Datenmigration, ein Format. */
+const phaseCovers=(ph,m)=>ph.from<=ph.to?(m>=ph.from&&m<=ph.to):(m>=ph.from||m<=ph.to);
+const GENERIC_FEED={from:1,to:12,name:'Passender organischer Dünger',
+  dose:'nach Herstellerangabe',note:'Auf feuchte Erde geben.'};
+function phasesOf(plantId){
+  const p=fertilizerPlans[plantId];
+  if(!p)return [GENERIC_FEED];
+  if(Array.isArray(p.phases)&&p.phases.length)return p.phases;
+  const out=[];
+  if(p.early)out.push({from:1,to:p.early.until||5,name:p.early.name,dose:p.early.dose,note:p.early.note||''});
+  if(p.late) out.push({from:p.late.from||6,to:12,name:p.late.name,dose:p.late.dose,note:p.late.note||''});
+  if(p.all)  out.push({from:1,to:12,name:p.all.name,dose:p.all.dose,note:p.all.note||''});
+  return out.length?out:[GENERIC_FEED];
+}
+
+/* Was diese Aufgabe an diesem Datum verlangt.
+
+   Außerhalb des Fensters wird KEIN Produkt genannt. Das ist der Kern: eine
+   Düngeempfehlung für eine Pflanze, deren Periode zu ist, ist keine schwächere
+   Empfehlung, sondern eine falsche. Stattdessen kommt zurück, wann es wieder
+   losgeht — die Karte sagt das, statt eine Dosierung anzubieten. */
 function fertilizerInfo(d,date=today()){
- if(!d.id.endsWith(':duengen')) return null;
- const plan=fertilizerPlans[d.plantId]; if(!plan) return {name:'Passender organischer Dünger',dose:'nach Herstellerangabe',note:'Auf feuchte Erde geben.'};
- const month=parse(date).getMonth()+1;
- if(plan.late && month>=plan.late.from) return {...plan.late,switched:true};
- if(plan.early && month<=plan.early.until) return plan.early;
- return plan.all||plan.late||plan.early;
+  if(!isFeedTask(d))return null;
+  const months=monthsOf(d),month=parse(isDateString(date)?date:today()).getMonth()+1;
+  const window=monthRangeLabel(months);
+  if(!months.includes(month))
+    return {dormant:true,months,window,resumes:clampToWindow(isDateString(date)?date:today(),months),
+      name:'',dose:'',note:''};
+  const phases=phasesOf(d.plantId);
+  const idx=Math.max(0,phases.findIndex(p=>phaseCovers(p,month)));
+  const cur=phases[idx]||GENERIC_FEED;
+  // Monate DIESER Phase, die auch im Fenster der Aufgabe liegen. Ein Plan darf
+  // großzügiger sein als das Fenster; angesagt wird nur, was tatsächlich zählt.
+  const inPhase=months.filter(m=>phaseCovers(cur,m));
+  // Der Umstellhinweis leuchtet im Umstellmonat und dann nicht mehr. Bis v61 war
+  // er auf Brennnesseljauche festgetextet und blieb den Rest des Jahres stehen —
+  // ein Hinweis, der immer da ist, wird nicht mehr gelesen.
+  const switched=idx>0&&inPhase.length>0&&month===Math.min(...inPhase);
+  // Die nächste Phase innerhalb desselben Fensters, damit die Umstellung
+  // angekündigt und nicht bloß irgendwann vollzogen wird.
+  let upcoming=null;
+  for(let i=idx+1;i<phases.length;i++){
+    const ms=months.filter(m=>m>month&&phaseCovers(phases[i],m));
+    if(ms.length){upcoming={month:Math.min(...ms),name:phases[i].name};break}
+  }
+  return {name:cur.name,dose:cur.dose,note:cur.note||'',dormant:false,months,window,
+    phase:{index:idx+1,total:phases.length,label:monthRangeLabel(inPhase)},switched,upcoming};
+}
+
+/* Der Kalender einer Pflanze am Stück — für die Pflanzenakte und für die KI-Akte,
+   damit der tägliche Lauf dasselbe Fenster sieht wie die App und nicht zu einer
+   Gabe rät, die die App gar nicht einplanen würde. */
+function feedingCalendarFor(plantId){
+  const feeds=defs.filter(d=>d.plantId===plantId&&isFeedTask(d));
+  if(!feeds.length)return null;
+  const months=[...new Set(feeds.flatMap(monthsOf))].sort((a,b)=>a-b);
+  const m=new Date().getMonth()+1;
+  /* Der Rasen hat ZWEI Düngeaufgaben mit eigenen Fenstern (Frühjahr, Herbst).
+     Maßgeblich ist die, die gerade offen ist — sonst meldete der Kalender im
+     September „Periode offen" und im selben Atemzug „kein Produkt", weil die
+     Frühjahrsaufgabe zufällig die erste in der Liste ist. */
+  const active=feeds.find(d=>monthsOf(d).includes(m));
+  const info=fertilizerInfo(active||feeds[0],today());
+  // Der früheste Wiederbeginn über alle Düngeaufgaben hinweg.
+  const resumes=active?'':feeds.map(d=>clampToWindow(today(),monthsOf(d)))
+    .sort((a,b)=>a.localeCompare(b))[0]||'';
+  return {months,window:monthRangeLabel(months),
+    phases:phasesOf(plantId).map(p=>({from:p.from,to:p.to,name:p.name,dose:p.dose||''})),
+    open:!!active,
+    current:info&&!info.dormant?{name:info.name,dose:info.dose,phase:info.phase.label}:null,
+    resumes};
+}
+
+/* ------------------------------------------- Abstand zwischen zwei Gaben ---- */
+/* Der Kalender hält den Abstand INNERHALB einer Aufgabe. Zwischen zwei
+   Düngeaufgaben derselben Pflanze hielt ihn bis v61 niemand: wer eine Woche zu
+   spät düngt und danach die zweite Aufgabe planmäßig abarbeitet, bekommt beide
+   Gaben in dieselbe Woche. Genau der Fall, den ein Pflegeplan mit zwei Düngungen
+   wahrscheinlich macht — und den der Nutzer nicht sehen kann, weil jede der
+   beiden Karten für sich völlig plausibel aussieht.
+
+   Verschoben wird ausschließlich NACH HINTEN. Eine Gabe vorzuziehen, weil
+   rechnerisch Platz wäre, ist das Gegenteil des Ziels. */
+
+/* Wann ist auf diese Pflanze zuletzt wirklich etwas gegangen? Nicht der
+   Aufgabenzustand, sondern der Verlauf: `history`-Einträge mit `fertilizer`
+   sind die tatsächlich ausgebrachten Gaben. */
+function lastFeedingDate(plantId){
+  return (state.history||[])
+    .filter(h=>h&&h.plantId===plantId&&h.fertilizer&&isDateString(h.date))
+    .map(h=>h.date).sort().pop()||'';
+}
+
+/* Der Mindestabstand ist keine erfundene Zahl, sondern der KÜRZERE der beiden
+   Rhythmen. Verträgt eine Pflanze alle 7 Tage eine Gabe, sind 7 Tage zwischen
+   zwei verschiedenen Gaben per Definition in Ordnung — und ändert die KI den
+   Rhythmus, wandert das Maß automatisch mit, ohne dass hier jemand nachzieht. */
+const minFeedGap=(a,b)=>Math.min(Number(a&&a.interval)||14,Number(b&&b.interval)||14);
+const feedTasksFor=id=>defs.filter(d=>d.plantId===id&&isFeedTask(d));
+
+/* Zwei Düngeaufgaben, die einander überhaupt etwas angehen, erkennt man an
+   überlappenden Fenstern. Frühjahrs- und Herbst-Rasendünger überlappen nicht:
+   das sind zwei absichtlich getrennte Ereignisse in zwei Jahreszeiten, und sie
+   auseinanderzuschieben wäre Unfug. Zwei Gaben im selben Zeitraum sind dagegen
+   dieselbe Versorgung und konkurrieren um denselben Wurzelballen. */
+const feedWindowsOverlap=(a,b)=>monthsOf(a).some(m=>monthsOf(b).includes(m));
+
+/* Nach einer tatsächlichen Gabe: alle ÜBRIGEN Düngeaufgaben derselben Pflanze
+   durchsehen und die zu dicht liegenden nach hinten schieben. Gibt zurück, was
+   bewegt wurde — der Aufrufer sagt es dem Nutzer, denn ein Termin, der sich
+   unbemerkt verschiebt, ist schlimmer als einer, der zu früh steht.
+
+   Zwei Aufgaben werden ABSICHTLICH in Ruhe gelassen:
+   - getrennte Fenster (siehe oben), und
+   - gemeinsamer `planId`: die beiden stammen aus einem bestätigten Pflegeplan,
+     der sie zusammen entworfen hat. Manchmal ist genau die enge Folge gewollt —
+     Startgabe und Nachschub —, und diese Absicht gehört dem Plan, nicht dieser
+     Funktion. */
+function adjustOtherFeedings(plantId,feedDate,doneId){
+  if(!isDateString(feedDate))return [];
+  const done=defs.find(d=>d.id===doneId);
+  const moved=[];
+  feedTasksFor(plantId).forEach(d=>{
+    if(d.id===doneId||!state.tasks[d.id])return;
+    if(done){
+      if(!feedWindowsOverlap(done,d))return;
+      if(done.planId&&done.planId===d.planId)return;
+    }
+    const earliest=clampToWindow(add(feedDate,done?minFeedGap(done,d):d.interval),monthsOf(d));
+    const cur=state.tasks[d.id].next;
+    if(!isDateString(cur)||cur>=earliest)return;      // liegt ohnehin weit genug
+    state.tasks[d.id]={...state.tasks[d.id],next:earliest};
+    moved.push({id:d.id,title:d.title,from:cur,to:earliest});
+  });
+  return moved;
+}
+
+/* Eine Verschiebung gehört ins Journal, nicht nur in einen Toast, der nach drei
+   Sekunden weg ist — und der tägliche Lauf liest den Verlauf mit. */
+function logFeedingShift(plantId,moved,because){
+  if(!moved.length)return;
+  state.history.unshift({date:today(),taskId:'feed-gap',plantId,
+    title:`Düngeabstand angepasst (${moved.length})`,
+    note:moved.map(m=>`${m.title}: ${fmt(m.from)} → ${fmt(m.to)}`).join(' · ')+
+      (because?` – Mindestabstand nach ${because}`:'')});
+}
+
+/* Einmal beim Start: gespeicherte Termine ins Fenster zurückholen. Ohne das
+   bliebe der Winterschneeball auf diesem Gerät auf seinem August-Termin stehen,
+   obwohl die Rechnung, die ihn erzeugt hat, längst korrigiert ist. */
+function clampScheduledTasks(){
+  let n=0;
+  defs.forEach(d=>{
+    const s=state.tasks[d.id];
+    if(!s||!isDateString(s.next))return;
+    const c=clampToWindow(s.next,monthsOf(d));
+    if(c!==s.next){s.next=c;n++}
+  });
+  if(n)save(false);
+  return n;
 }
 
 /* ------------------------------------------------- Bedarf -> Produkt -------- */
@@ -568,14 +787,23 @@ function initialDueFor(d){
     const cand=`${y}-${mm}-${dd}`;
     return diff(cand)>=0?cand:`${y+1}-${mm}-${dd}`;
   }
-  return today();
+  /* „Heute" nur, wenn heute in der Saison liegt. Bis v61 stand auf der Karte
+     einer ruhenden Aufgabe „Einplanen (fällig heute)" — im September, bei einem
+     Gehölz mit Düngefenster März–Juni. Der Knopf hat also wörtlich angeboten, zum
+     falschen Zeitpunkt zu düngen. */
+  return clampToWindow(today(),monthsOf(d));
 }
 
 function initializeCareTasks(){
   let changed=false;
   defs.forEach(d=>{
     if(state.tasks[d.id]) return;
-    if(d.id.endsWith(':duengen')) return;      // fertilizing started manually
+    /* Düngen wird von Hand eingeplant, nie automatisch. Die Prüfung stand als
+       `id.endsWith(':duengen')` da und übersah damit ausgerechnet die Namen, die
+       die KI vergibt (`duengen-fluessig`): eine per Pflegeplan hinzugekommene
+       zweite Düngung startete beim nächsten App-Start mit Fälligkeit HEUTE,
+       auch wenn gestern gedüngt wurde. `isFeedTask` erkennt beide. */
+    if(isFeedTask(d)) return;
     if(d.optional) return;                      // optional tasks not auto-started
     if(!inSeason(d)) return;
     state.tasks[d.id]={last:'',next:initialDueFor(d),autoStarted:true};
@@ -592,11 +820,21 @@ function sortTasks(a,b){const an=nextFor(a)||'9999',bn=nextFor(b)||'9999';
   return an.localeCompare(bn)||plant(a.plantId).name.localeCompare(plant(b.plantId).name)}
 
 function complete(id){
-  const d=defs.find(x=>x.id===id),date=today(),next=add(date,d.interval),fert=fertilizerInfo(d,date);
+  const d=defs.find(x=>x.id===id),date=today();
+  /* Nicht Datum + Intervall, sondern Datum + Intervall INNERHALB des Fensters.
+     Sonst terminiert eine Juni-Düngung des Winterschneeballs die nächste auf den
+     1. August und die App rät zu einer Gabe außerhalb der Periode. */
+  const next=scheduleNext(d,date),fert=fertilizerInfo(d,date);
   state.tasks[id]={last:date,next};
-  state.history.unshift({date,taskId:id,plantId:d.plantId,title:d.title,fertilizer:fert?.name||''});
+  state.history.unshift({date,taskId:id,plantId:d.plantId,title:d.title,
+    fertilizer:(fert&&!fert.dormant&&fert.name)||''});
+  // Eine Gabe ist ein Ereignis für die ganze Pflanze, nicht nur für diese eine
+  // Aufgabe: alle übrigen Düngungen nachziehen, die dadurch zu dicht lägen.
+  const moved=isFeedTask(d)?adjustOtherFeedings(d.plantId,date,id):[];
+  logFeedingShift(d.plantId,moved,d.title);
   save();renderAll();
-  toast(`${d.title} erledigt – wieder am ${fmt(next)}${fert?` · ${fert.name}`:''}`);
+  toast(`${d.title} erledigt – wieder am ${fmt(next)}${fert&&!fert.dormant?` · ${fert.name}`:''}`+
+    (moved.length?` · ${moved.length} weitere Düngung${moved.length===1?'':'en'} nachgezogen`:''));
 }
 /* Ticking a task off is a different act from agreeing with a recommendation,
    and the two must never be merged: confirming a proposal over breakfast would
@@ -625,23 +863,45 @@ function completeWithNote(id){
   const note=(prompt(isFeed
     ? 'Anmerkung für die KI (optional) – z. B. warum ein anderer Dünger, eine Beobachtung oder eine Frage:'
     : 'Anmerkung für die KI (optional) – Beobachtung oder Frage:')||'').trim();
-  const date=today(),next=add(date,d.interval),fallback=fertilizerInfo(d,date);
+  const date=today(),next=scheduleNext(d,date),fallback=fertilizerInfo(d,date);
   state.tasks[id]={last:date,next};
   state.history.unshift({date,taskId:id,plantId:d.plantId,title:d.title,
-    fertilizer:used||fallback?.name||'',note});
+    fertilizer:used||(fallback&&!fallback.dormant&&fallback.name)||'',note});
   /* addObservation saves, re-renders and stamps the plant itself. Without a
      note there is nothing for the run to answer, so no observation is made and
      the tick stays a plain completion. */
+  const moved=isFeedTask(d)?adjustOtherFeedings(d.plantId,date,id):[];
+  logFeedingShift(d.plantId,moved,used||d.title);
   if(note)addObservation(d.plantId,isFeed?'Düngung':'Maßnahme',
     `${d.title} erledigt${used?` – verwendet: ${used}`:''}: ${note}`);
   save();renderAll();
-  toast(`${d.title} erledigt${used?` · ${used}`:''}${note?' · Anmerkung geht an die KI':''}`);
+  toast(`${d.title} erledigt${used?` · ${used}`:''}${note?' · Anmerkung geht an die KI':''}`+
+    (moved.length?` · ${moved.length} weitere Düngung${moved.length===1?'':'en'} nachgezogen`:''));
 }
+/* Nachträglich eintragen („ich habe es letzten Dienstag gemacht") ist eine
+   ebenso echte Gabe wie das Abhaken heute — und der häufigere Anlass, bei dem
+   die übrigen Düngungen nachgezogen werden müssen. */
 function setTaskDate(id,date){if(!date)return;const d=defs.find(x=>x.id===id);
-  state.tasks[id]={last:date,next:add(date,d.interval)};save();renderAll();toast('Termin aktualisiert')}
+  state.tasks[id]={last:date,next:scheduleNext(d,date)};
+  const moved=isFeedTask(d)?adjustOtherFeedings(d.plantId,date,id):[];
+  logFeedingShift(d.plantId,moved,d.title);
+  save();renderAll();
+  toast('Termin aktualisiert'+(moved.length?` · ${moved.length} weitere Düngung${moved.length===1?'':'en'} nachgezogen`:''))}
 function clearTask(id){delete state.tasks[id];save();renderAll()}
+/* Eine Düngeaufgabe wird nicht ins Leere eingeplant: liegt auf dieser Pflanze
+   eine frische Gabe, beginnt sie frühestens einen Mindestabstand danach. Ohne
+   das startete eine zweite Düngung mit Fälligkeit HEUTE, auch wenn gestern
+   gedüngt wurde — und beide Karten sahen für sich völlig plausibel aus. */
 function startTask(id){const d=defs.find(x=>x.id===id);if(!d)return;
-  const next=initialDueFor(d);
+  let next=initialDueFor(d);
+  if(isFeedTask(d)){
+    const last=lastFeedingDate(d.plantId);
+    if(last){
+      const gap=Math.min(...feedTasksFor(d.plantId).map(x=>Number(x.interval)||14));
+      const earliest=clampToWindow(add(last,gap),monthsOf(d));
+      if(earliest>next)next=earliest;
+    }
+  }
   state.tasks[id]={last:'',next,autoStarted:false};save();renderAll();
   toast(`Eingeplant – fällig ${diff(next)===0?'heute':fmt(next)}`)}
 
@@ -679,47 +939,283 @@ function renderStats(){
     <div class="stat ok"><b>${count('ok')}</b><span>später fällig</span></div>`;
 }
 
-function taskHTML(d){
+/* `anchor` nur in der Pflanzenakte setzen. Dieselbe Aufgabe wird auch in „Heute"
+   und „Diese Woche" gerendert, und die stehen gleichzeitig im DOM — eine id
+   käme sonst doppelt vor, und `getElementById` fände beim Sprung aus der Leiste
+   die Karte im Hintergrund statt die in der Akte.
+
+   Deshalb rufen ALLE Aufstellungen explizit `d=>taskHTML(d)` auf: ein blankes
+   `.map(taskHTML)` reicht den Array-Index als zweites Argument durch, und der
+   ist ab dem zweiten Element wahr. */
+function taskHTML(d,anchor){
   const p=plant(d.plantId),s=taskState(d.id),started=!!state.tasks[d.id];
   const cls=started?classify(d):'new';
-  const fert=fertilizerInfo(d,nextFor(d)||today());
+  /* ZWEI Zeitpunkte, und sie beantworten verschiedene Fragen.
+
+     Ruht die Aufgabe, entscheidet HEUTE — nicht der Termin. Sonst schlägt der
+     Kalender zurück ins eigene Knie: er schiebt den Folgetermin des
+     Winterschneeballs korrekt auf den 1. März, die Karte liest den Dünger für
+     diesen März, findet das Fenster offen und zeigt im September wieder ein
+     Produkt. Genau der Fehler, gegen den die Verschiebung gebaut wurde.
+
+     Läuft sie dagegen, gilt der TERMIN: gedüngt wird an dem Tag, und wenn
+     dazwischen die Phase wechselt, ist das neue Produkt das richtige. */
+  const fertNow=fertilizerInfo(d,today());
+  const dormant=!!(fertNow&&fertNow.dormant);
+  const fert=dormant?fertNow:fertilizerInfo(d,nextFor(d)||today());
   /* A task that carries its own product IS the answer: it came out of a care
      plan the user confirmed, and letting the generic resolver second-guess it
      would quietly undo that decision every time the season table disagreed.
      The resolver only fills the gap where a task names nothing. */
   const own=d.fertId?fertilizers().find(f=>f.id===d.fertId&&f.available!==false):null;
-  const pick=fert?(own?{choice:own,alts:[],need:'plan'}:pickFertilizer(fert)):null;
-  const fertHTML=fert?`<div class="fert">${pick&&pick.choice
-      ? `<b>🌿 Dünger: ${esc(pick.choice.name)}</b><br>
+  const pick=(fert&&!dormant)?(own?{choice:own,alts:[],need:'plan'}:pickFertilizer(fert)):null;
+  /* Ruhende Düngeaufgabe: kein Produkt, keine Dosierung, kein Vorschlag. Was hier
+     steht, ist das Datum, an dem es wieder losgeht — die einzige brauchbare
+     Antwort außerhalb der Periode. */
+  const fertHTML=!fert?'':dormant
+    ? `<div class="fert dormant"><b>💤 Außerhalb der Düngeperiode</b><br>
+         <span>Düngeperiode ${esc(fert.window)} · frühestens wieder ${fmt(fert.resumes)}</span>
+         <br><span class="fert-why">Deshalb kein Produkt und keine Dosierung: außerhalb der Periode schadet eine Gabe mehr, als sie nützt.</span></div>`
+    : `<div class="fert">${pick&&pick.choice
+      ? `<b>🌿 Dünger: ${fertRefHTML(pick.choice)}</b><br>
          <span>Dosierung: ${esc(d.dose||pick.choice.dosage||fert.dose)}</span>
          <br><span class="fert-why">${own?'aus dem Pflegeplan':'gewählt für'}: ${esc(own?(d.planTitle||'Pflegeplan'):fert.name)}${pick.choice.npk?` · NPK ${esc(pick.choice.npk)}`:''}</span>
-         ${pick.alts.length?`<br><span class="fert-why">sonst möglich: ${pick.alts.map(a=>esc(a.name)).join(', ')}</span>`:''}`
+         ${pick.alts.length?`<br><span class="fert-why">sonst möglich: ${pick.alts.map(fertRefHTML).join(', ')}</span>`:''}`
       : `<b>🌿 Dünger: ${esc(fert.name)}</b><br><span>Dosierung: ${esc(fert.dose)}</span>
          <br><span class="fert-why">${fertilizers().length
              ? 'Nichts Passendes im Bestand verfügbar – im Reiter „Dünger\u201c ergänzen oder Packung fotografieren.'
              : 'Noch kein Bestand erfasst – im Reiter „Dünger\u201c eintragen, dann steht hier ein konkretes Produkt.'}</span>`}
-    ${fert.note?`<br><span>${esc(fert.note)}</span>`:''}${fert.switched?`<span class="switch">↪ Automatische Umstellung: Brennnesseljauche ist jetzt nicht mehr Hauptdünger.</span>`:''}</div>`:'';
+    ${fert.note?`<br><span>${esc(fert.note)}</span>`:''}
+    <span class="fert-why">Düngeperiode ${esc(fert.window)}${fert.phase.total>1?` · Phase ${fert.phase.index} von ${fert.phase.total} (${esc(fert.phase.label)})`:''}</span>
+    ${fert.upcoming?`<span class="fert-why">↪ ab ${MONTH_ABBR[fert.upcoming.month-1]} stellt der Kalender um auf ${esc(fert.upcoming.name)}</span>`:''}
+    ${fert.switched?`<span class="switch">↪ Umstellung ist jetzt: ab diesem Monat ${esc(fert.name)}.</span>`:''}</div>`;
   const due=started?'':initialDueFor(d);
   const dueTxt=started?'':(diff(due)===0?'heute':fmt(due));
   const cycleTxt=d.interval>=365?'in einem Jahr':`in ${d.interval} Tagen`;
   const meta=started
-    ? `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${statusText(d)}${nextFor(d)?` · fällig ${fmt(nextFor(d))}`:''}${s.last?` · zuletzt ${fmt(s.last)}`:''}`
-    : `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${d.optional?'optional · ':''}noch nicht aktiv`;
-  const startHint=started?'':`<div class="hint">„✓ Gerade gemacht“: du hast das eben erledigt – nächster Termin ${cycleTxt}.<br>„✓ mit Notiz“: dasselbe, aber du hältst fest, welchen Dünger du wirklich genommen hast, oder stellst eine Frage – die KI antwortet am nächsten Morgen.<br>„Einplanen“: nur auf die Aufgabenliste setzen – fällig ${dueTxt}.</div>`;
+    ? `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${dormant?`ruht bis ${fmt(fert.resumes)}`:statusText(d)}${nextFor(d)?` · fällig ${fmt(nextFor(d))}`:''}${s.last?` · zuletzt ${fmt(s.last)}`:''}`
+    : `<span class="badge">${esc(p.cat)}</span><strong>${esc(p.name)}</strong> · ${d.optional?'optional · ':''}${dormant?`ruht bis ${fmt(fert.resumes)}`:'noch nicht aktiv'}`;
+  const startHint=(started||dormant)?'':`<div class="hint">„✓ Gerade gemacht“: du hast das eben erledigt – nächster Termin ${cycleTxt}.<br>„✓ mit Notiz“: dasselbe, aber du hältst fest, welchen Dünger du wirklich genommen hast, oder stellst eine Frage – die KI antwortet am nächsten Morgen.<br>„Einplanen“: nur auf die Aufgabenliste setzen – fällig ${dueTxt}.</div>`;
+  /* Abhaken bleibt auch außerhalb der Periode möglich — wer tatsächlich gedüngt
+     hat, muss das festhalten können, und der Folgetermin landet ohnehin im
+     Fenster. „Einplanen (fällig heute)" verschwindet dagegen: genau diese Zeile
+     hat dem Winterschneeball im September das Düngen angeboten. */
   const actions=started
     ? `<input aria-label="Erledigt am" title="Datum der letzten Erledigung setzen" type="date" value="${s.last||''}" onchange="setTaskDate('${d.id}',this.value)">
        <button class="btn primary" onclick="complete('${d.id}')">✓ Erledigt</button>
        <button class="btn soft" onclick="completeWithNote('${d.id}')">✓ mit Notiz</button>
        ${s.last?`<button class="btn" onclick="clearTask('${d.id}')">Zurücksetzen</button>`:''}`
-    : `<button class="btn primary" onclick="complete('${d.id}')">✓ Gerade gemacht</button>
+    : `<button class="btn ${dormant?'soft':'primary'}" onclick="complete('${d.id}')">✓ Gerade gemacht</button>
        <button class="btn soft" onclick="completeWithNote('${d.id}')">✓ mit Notiz</button>
-       <button class="btn soft" onclick="startTask('${d.id}')">Einplanen (fällig ${dueTxt})</button>`;
-  return `<article class="task ${cls}"><div>
+       ${dormant?'':`<button class="btn soft" onclick="startTask('${d.id}')">Einplanen (fällig ${dueTxt})</button>`}`;
+  return `<article class="task ${dormant?'dormant':cls}"${anchor?` id="task-${gjKey(d.id)}"`:''}><div>
     <h3>${esc(d.title)}</h3>
     <div class="meta">${meta}</div>
     ${d.planTitle&&!fert?`<div class="meta">Teil von: ${esc(d.planTitle)}</div>`:''}
-    ${d.note?`<div class="note">${esc(d.note)}</div>`:''}${fertHTML}${startHint}
+    ${d.note?`<div class="note">${escLinked(d.note)}</div>`:''}${fertHTML}${startHint}
    </div><div class="actions">${actions}</div></article>`;
+}
+
+/* ------------------------------------------------------- Gartenjahr-Leiste -- */
+/* Der Pflegeplan als Kartenliste beantwortet je Karte eine Frage. „Was passiert
+   bei dieser Pflanze übers Jahr, und wie greift das ineinander" beantwortet
+   keine — und genau daran sind zwei Fehler dieser Woche sichtbar geworden
+   (Düngung außerhalb der Periode, zwei Gaben zu dicht). Auf einer Jahresachse
+   wären beide sofort aufgefallen.
+
+   Ersetzt den Düngekalender aus v62: zwei Kalender in einer Akte sind schlechter
+   als einer. Entwurf, Begründung und Testfälle:
+   specs/active/2026-09-06-gartenjahr-leiste-design.md */
+
+const taskType=d=>String(d&&d.id||'').split(':')[1]||'';
+const gjKey=id=>String(id).replace(/[^a-zA-Z0-9-]+/g,'_');
+
+/* Kategorie aus dem Aufgabennamen, nicht aus einer festen Liste: die KI legt
+   über `addTasks` eigene Typen an, und eine Leiste, die davon weiß bleibt, wäre
+   schlimmer als eine grobe Einordnung. */
+function taskCategory(type){
+  const t=String(type||'').toLowerCase();
+  if(/dueng|kompost/.test(t))                       return 'feed';
+  if(/schnitt|ausgeiz|schneid/.test(t))             return 'cut';
+  if(/wasser|giess|bewaess/.test(t))                return 'water';
+  if(/winter|schutz|frost/.test(t))                 return 'shield';
+  if(/kontrolle|krankheit|rost|blatt|blaetter|engerling|hygiene|schaedling|milbe|laus/.test(t))
+                                                    return 'check';
+  return 'other';
+}
+const GJ_CAT={
+  feed  :{ink:'var(--leaf)', label:'Düngen'},
+  cut   :{ink:'var(--honey)',label:'Schnitt'},
+  water :{ink:'var(--sky)',  label:'Wasser'},
+  shield:{ink:'var(--iris)', label:'Schutz'},
+  check :{ink:'var(--stone)',label:'Kontrolle'},
+  other :{ink:'var(--muted)',label:'Sonstiges'}
+};
+const GJ_ORDER={feed:0,water:1,cut:2,shield:3,check:4,other:5};
+
+/* Ein Phasenwechsel betrifft NUR Düngeaufgaben. `fertilizerPlans` ist nach
+   PFLANZE verschlüsselt, nicht nach Aufgabe — ohne diese Prüfung bekäme auch die
+   Braunfäule-Kontrolle der Tomate eine Düngerphasengrenze verpasst, weil die
+   Tomate im Juni von Jauche auf kaliumbetont umstellt. Der Entwurf hat genau das
+   getan, bevor die Prüfung da war. Eine einzelne Phase ist kein Wechsel und
+   bekommt deshalb weder Kante noch Bildunterschrift. */
+function gjPhaseAt(plantId,m,type){
+  if(taskCategory(type)!=='feed')return null;
+  const ph=phasesOf(plantId);
+  if(!ph||ph.length<2)return null;
+  const i=ph.findIndex(p=>phaseCovers(p,m));
+  return i<0?null:{index:i,name:ph[i].name,total:ph.length};
+}
+/* Ein Monatslauf zerfällt in Stücke gleicher Phase. */
+function gjPieces(d,a,b){
+  const type=taskType(d),out=[];
+  for(let m=a;m<=b;m++){
+    const ph=gjPhaseAt(d.plantId,m,type),key=ph?ph.index:-1,last=out[out.length-1];
+    if(last&&last.key===key)last.b=m; else out.push({a:m,b:m,key,name:ph?ph.name:''});
+  }
+  return out;
+}
+/* Heller Beginn, satter Schluss: die Rampe macht „früh im Jahr" und „spät im
+   Jahr" auf einen Blick unterscheidbar, ohne dass man einen Farbnamen
+   nachschlagen muss. */
+function gjTint(ink,key,n){
+  if(key<0)return `color-mix(in srgb,${ink} 76%,white)`;
+  if(n<2)return ink;
+  const pct=Math.round(30+key*(70/(n-1)));
+  return pct>=100?ink:`color-mix(in srgb,${ink} ${pct}%,white)`;
+}
+
+/* Eine Spur. `px` ist die gemessene Breite der Leiste — daran entscheidet sich,
+   ob die Takt-Schraffur lesbar wäre oder zu Matsch würde. */
+function gjTrackHTML(d,px){
+  const type=taskType(d),c=GJ_CAT[taskCategory(type)]||GJ_CAT.other;
+  const once=d.interval>=365,months=monthsOf(d);
+  const step=(Number(d.interval)||14)/365, showTicks=!once&&step*px>=4;
+  const n=(phasesOf(d.plantId)||[]).length;
+  const started=!!state.tasks[d.id];
+  let out='';
+  monthRuns(months).forEach(([a,b])=>{
+    gjPieces(d,a,b).forEach((p,i,arr)=>{
+      const L=(p.a-1)/12*100, W=(p.b-p.a+1)/12*100;
+      let inner='';
+      if(once){
+        inner=`<span class="gj-pin" style="left:${100/(p.b-p.a+1)/2}%;background:${c.ink}"></span>`;
+      }else if(showTicks){
+        /* Takt global übers Jahr gerechnet und dann dem Stück zugeordnet, in dem
+           er liegt — so bleibt der Rhythmus über einen Phasenwechsel hinweg
+           gleichmäßig, statt an jeder Kante neu anzufangen. */
+        for(let k=1;k*step<1;k++){
+          const y=k*step;
+          if(y>(p.a-1)/12&&y<p.b/12)
+            inner+=`<span class="gj-tick" style="left:${(y-(p.a-1)/12)/((p.b-p.a+1)/12)*100}%"></span>`;
+        }
+      }
+      const cls=['gj-seg',once?'once':'',started?'':'idle',d.optional?'opt':''].filter(Boolean).join(' ');
+      const title=`${d.title} — ${MONTH_ABBR[p.a-1]}${p.b>p.a?'–'+MONTH_ABBR[p.b-1]:''}, `+
+        (once?'einmal jährlich':`alle ${d.interval} Tage`)+(p.name?` · ${p.name}`:'');
+      const jump=`focusTask('${gjKey(d.id)}')`;
+      out+=`<span class="${cls}" style="--seg-ink:${c.ink};left:${L}%;width:${W}%;`+
+        `${once?'':`background:${gjTint(c.ink,p.key,n)}`}" tabindex="0" role="button"`+
+        ` title="${esc(title)}" onclick="${jump}"`+
+        ` onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${jump}}"`+
+        `>${inner}</span>`;
+      // Die Umstellung selbst: Kerbe plus Raute auf der Kante. Zwei Tönungen
+      // allein läsen sich als Schattierung, nicht als Wechsel.
+      if(i<arr.length-1)
+        out+=`<span class="gj-switch" style="left:${p.b/12*100}%;--seg-ink:${c.ink}"
+          title="${esc('Umstellung: '+(arr[i+1].name||''))}"></span>`;
+    });
+  });
+  const now=new Date(), soy=new Date(now.getFullYear(),0,0);
+  const nowPct=Math.min(100,((now-soy)/86400000)/365*100);
+  return `<div class="gj-track">
+    <div class="gj-grid">${ALL_MONTHS.map((_,i)=>`<i class="${i%3===0?'q':''}"></i>`).join('')}</div>
+    ${out}<span class="gj-now" style="left:${nowPct}%"></span></div>`;
+}
+
+/* Was in den Balken nicht hineinpasst, steht darunter. „Brennnesseljauche"
+   braucht rund 110 px; das Aprilfenster der Tomate ist am Handy 25 px breit.
+   Der Balken sagt WANN, diese Zeile sagt WOMIT — in denselben Tönungen, damit
+   die Zuordnung ohne Nachdenken funktioniert. */
+function gjPhaseCaption(d){
+  if(taskCategory(taskType(d))!=='feed')return '';
+  const n=(phasesOf(d.plantId)||[]).length;
+  if(n<2)return '';
+  const seen=new Map();
+  monthRuns(monthsOf(d)).forEach(([a,b])=>gjPieces(d,a,b).forEach(p=>{
+    if(p.key<0)return;
+    const e=seen.get(p.key)||{name:p.name,runs:[]};
+    e.runs.push([p.a,p.b]); seen.set(p.key,e);
+  }));
+  if(!seen.size)return '';
+  const ink=GJ_CAT.feed.ink;
+  const span=([a,b])=>a===b?MONTH_ABBR[a-1]:`${MONTH_ABBR[a-1]}–${MONTH_ABBR[b-1]}`;
+  /* Bewusst `esc` statt `escLinked`: hier steht eine SORTE („kaliumbetonter
+     Tomaten- oder Gemüsedünger") aus `fertilizerPlans`, kein Produkt aus dem
+     Schuppen — es gibt also nichts zu öffnen. Verlinkt sah es zudem falsch aus:
+     die Namenssuche fand „Tomaten" mitten im Wort „Tomatendünger" und machte
+     daraus in der Tomaten-Akte einen Verweis auf die Tomate selbst. Das konkrete
+     Produkt verlinkt die Aufgabenkarte darunter. */
+  return `<div class="gj-cap">${[...seen.entries()].sort((x,y)=>x[0]-y[0]).map(([k,e])=>
+    `<span class="gj-cap-i"><span class="gj-sw" style="background:${gjTint(ink,k,n)}"></span>`+
+    `<b>${e.runs.map(span).join(', ')}</b> ${esc(e.name)}</span>`).join('')}</div>`;
+}
+
+/* Die ganze Leiste einer Pflanze. `px` ist eine Schätzung der Leistenbreite für
+   die Takt-Entscheidung; sie wird nach dem Einfügen an der echten Breite
+   nachgezogen (gjMeasure). */
+function gjStripHTML(plantId,px=520){
+  const list=defs.filter(d=>d.plantId===plantId).sort((a,b)=>
+    (GJ_ORDER[taskCategory(taskType(a))]-GJ_ORDER[taskCategory(taskType(b))])||
+    (Math.min(...monthsOf(a))-Math.min(...monthsOf(b)))||
+    String(a.title).localeCompare(String(b.title)));
+  if(!list.length)return '';
+  const nowM=new Date().getMonth();
+  const months=`<div class="gj-months">${ALL_MONTHS.map((m,i)=>
+    `<span class="${i%3===0?'q':''} ${i===nowM?'now':''}">${MONTH_ABBR[i][0]}</span>`).join('')}</div>`;
+  const rows=list.map(d=>`<div class="gj-row">
+      <div class="gj-rowlabel">${esc(d.title)}${d.optional?' <span class="mini">optional</span>':''}</div>
+      ${gjTrackHTML(d,px)}${gjPhaseCaption(d)}
+    </div>`).join('');
+  const cats=[...new Set(list.map(d=>taskCategory(taskType(d))))]
+    .sort((a,b)=>GJ_ORDER[a]-GJ_ORDER[b]);
+  const legend=`<div class="gj-legend">${cats.map(k=>
+      `<b><span class="gj-sw" style="background:${GJ_CAT[k].ink}"></span>${GJ_CAT[k].label}</b>`).join('')}
+    <b><span class="gj-sw" style="background:var(--honey)"></span>heute</b></div>`;
+  return `<div class="gj" data-plant="${esc(plantId)}">
+    <div class="gj-rows">${rows}</div>${months}${legend}</div>`;
+}
+
+/* Die Taktdichte hängt an der echten Pixelbreite, die beim Zusammenbauen des
+   HTML noch niemand kennt. Nach dem Einfügen einmal messen und, wenn die
+   Schätzung danebenlag, die betroffenen Spuren neu zeichnen. Ohne das steht am
+   Handy eine Schraffur, die dort Matsch ist — oder auf dem iPad keine, wo sie
+   gut lesbar wäre. */
+function gjMeasure(){
+  const box=document.querySelector('#plantFile .gj');
+  if(!box)return;
+  const t=box.querySelector('.gj-track');
+  if(!t)return;
+  const px=Math.round(t.getBoundingClientRect().width);
+  // Toleranz, damit ein Pixel Layout-Rauschen keine Neuzeichnung auslöst und
+  // die Schleife sicher terminiert.
+  if(!px||Math.abs(px-(Number(box.dataset.px)||0))<24)return;
+  const holder=document.createElement('div');
+  holder.innerHTML=gjStripHTML(box.dataset.plant,px);
+  const fresh=holder.firstElementChild;
+  if(!fresh)return;
+  fresh.dataset.px=px;
+  box.replaceWith(fresh);
+}
+
+/* Vom Balken zur Aufgabenkarte. Die Leiste ist damit Navigation, nicht Zierde. */
+function focusTask(key){
+  const el=document.getElementById('task-'+key);
+  if(!el)return;
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  el.scrollIntoView({block:'center',behavior:reduce?'auto':'smooth'});
+  el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');
+  setTimeout(()=>el.classList.remove('flash'),1500);
 }
 
 function relevantToday(){return defs.filter(d=>(inSeason(d)||state.showAllSeasons)&&state.tasks[d.id]&&['late','due'].includes(classify(d))).sort(sortTasks)}
@@ -728,14 +1224,14 @@ function renderToday(){
   const upcoming=defs.filter(d=>(inSeason(d)||state.showAllSeasons)&&state.tasks[d.id]&&classify(d)==='soon').sort(sortTasks).slice(0,8);
   document.getElementById('todayContent').innerHTML=
    `<div class="section-title"><h2>Jetzt zu erledigen</h2><small>${overdue.length} Aufgabe${overdue.length===1?'':'n'}</small></div>
-    ${overdue.length?`<div class="task-list">${overdue.map(taskHTML).join('')}</div>`:`<div class="empty">🎉 Heute ist nichts dringend fällig.</div>`}
+    ${overdue.length?`<div class="task-list">${overdue.map(d=>taskHTML(d)).join('')}</div>`:`<div class="empty">🎉 Heute ist nichts dringend fällig.</div>`}
     <div class="section-title"><h2>Als Nächstes</h2><small>Nächste 7 Tage</small></div>
-    ${upcoming.length?`<div class="task-list">${upcoming.map(taskHTML).join('')}</div>`:`<div class="empty">Keine weiteren Aufgaben in den nächsten sieben Tagen.</div>`}`;
+    ${upcoming.length?`<div class="task-list">${upcoming.map(d=>taskHTML(d)).join('')}</div>`:`<div class="empty">Keine weiteren Aufgaben in den nächsten sieben Tagen.</div>`}`;
 }
 function renderWeek(){
   const list=defs.filter(d=>(inSeason(d)||state.showAllSeasons)&&state.tasks[d.id]&&['late','due','soon'].includes(classify(d))).sort(sortTasks);
   document.getElementById('weekContent').innerHTML=list.length
-   ?`<div class="task-list">${list.map(taskHTML).join('')}</div>`
+   ?`<div class="task-list">${list.map(d=>taskHTML(d)).join('')}</div>`
    :'<div class="empty">Diese Woche ist alles erledigt.</div>';
 }
 
@@ -746,11 +1242,12 @@ function renderPlants(){
   document.getElementById('plantGrid').innerHTML=list.map(p=>{
     const ts=defs.filter(d=>d.plantId===p.id);
     const next=ts.filter(d=>state.tasks[d.id]&&nextFor(d)).sort(sortTasks)[0];
-    const photo=photoCache[p.id],h=healthFor(p.id),pf=profileFor(p.id);
+    const photo=coverPhotoFor(p.id),h=healthFor(p.id),pf=profileFor(p.id);
     return `<article class="plant-card">
       <div class="pc-photo" onclick="openPlantFile('${p.id}')">
         <span class="pc-health">${esc(h.status)}</span>
-        ${photo?`<img src="${photo}" alt="${esc(p.name)}">`:`<div class="pc-empty">📷 Kein Foto<br>Tippen für Pflanzenakte</div>`}
+        ${photo?`<img src="${photo.src}" alt="${esc(p.name)}">`:`<div class="pc-empty">📷 Kein Foto<br>Tippen für Pflanzenakte</div>`}
+        ${photo&&photo.fallback?`<span class="pc-health" style="left:auto;right:8px">aus dem Verlauf</span>`:''}
       </div>
       <div class="pc-body">
         <span class="badge">${esc(p.cat)}</span>
@@ -923,11 +1420,19 @@ function deleteObservation(id,plantId){
   state.observations=state.observations.filter(o=>o.id!==id);save();openPlantFile(plantId);toast('Eintrag gelöscht');
 }
 function plantTimeline(id){
-  const obs=(state.observations||[]).filter(o=>o.plantId===id);
+  const all=(state.observations||[]).filter(o=>o.plantId===id);
+  /* KI-Befunde eines Tages als EIN Eintrag. Der Lauf schreibt je Foto einen; im
+     Verlauf standen sie als drei Absätze untereinander, die einander zur Hälfte
+     wiederholten. Alles andere bleibt Eintrag für Eintrag — nur die KI hat den
+     Hang, dieselbe Pflanze am selben Morgen mehrfach zu beschreiben. */
+  const ki=groupKiFindings(all.filter(o=>o.type==='KI-Diagnose'))
+    .map(g=>({id:g.ids[0],ids:g.ids,plantId:id,date:g.date,type:'KI-Diagnose',
+      text:g.text,readonly:g.ids.length>1}));
+  const obs=all.filter(o=>o.type!=='KI-Diagnose');
   const hist=(state.history||[]).filter(h=>h.plantId===id&&!['observation'].includes(h.taskId))
     .map((h,i)=>({id:`hist-${i}`,plantId:id,date:h.date,type:h.taskId==='health'?'Gesundheit':h.taskId==='profile'?'Akte':'Pflege',
       text:[h.title,h.note,h.fertilizer?`Dünger: ${h.fertilizer}`:''].filter(Boolean).join(' · '),readonly:true}));
-  return [...obs,...hist].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  return [...obs,...ki,...hist].sort((a,b)=>(b.date||'').localeCompare(a.date||''));
 }
 
 /* ------------------------------------------------- KI diagnosis import ------ */
@@ -1522,10 +2027,24 @@ async function confirmProposal(id){
         dose:t.dose!==undefined?t.dose:(cur.dose||''),
         planId:t.planId!==undefined?t.planId:(cur.planId||''),
         planTitle:t.planTitle!==undefined?t.planTitle:(cur.planTitle||'')});
-      // A changed rhythm re-bases from today rather than keeping a due date
-      // computed under the old interval.
-      if(state.tasks[t.id]){const last=state.tasks[t.id].last||'';
-        state.tasks[t.id]={last,next:add(last||today(),Number(t.interval)||cur.interval)}}
+      /* Ein geänderter Rhythmus rechnet ab der LETZTEN GABE neu, nicht ab dem
+         alten Termin — der war unter dem alten Intervall berechnet und sagt
+         nichts mehr. Ab der letzten Gabe und nicht ab heute, weil sonst eine
+         Planänderung am Tag nach dem Düngen den vollen Abstand noch einmal von
+         vorn beginnen ließe: das verzögert, aber die umgekehrte Variante
+         (ab dem alten Termin) verkürzt den Abstand, und zu eng ist bei Dünger
+         der Schaden, zu spät bloß ein Ärgernis.
+
+         Und das Ergebnis muss durchs Fenster: bis eben rechnete diese Zeile mit
+         `add` statt `scheduleNext` und war damit die einzige Stelle, an der die
+         Saisonsperre von v62 nicht griff — eine bestätigte Planänderung konnte
+         dem Winterschneeball wieder einen Julitermin geben. */
+      if(state.tasks[t.id]){
+        const last=state.tasks[t.id].last||'';
+        const iv=Number(t.interval)||cur.interval;
+        const months=Array.isArray(t.months)&&t.months.length?t.months:cur.months;
+        state.tasks[t.id]={last,next:clampToWindow(add(last||today(),iv),months)};
+      }
     });
     if(Array.isArray(pl.addTasks)&&pl.addTasks.length)
       await applyKiDiagnosis({id:`${p.id}-apply`,plantId:p.plantId,date:p.date,addTasks:pl.addTasks});
@@ -1810,7 +2329,18 @@ async function addTimelinePhoto(id,useCamera){
   await putPhoto(key,data);
   state.photoMeta[key]={plantId:id,date:today(),caption,cover:false};
   state.observations.unshift({id:`obs-${Date.now()}`,plantId:id,date:today(),type:'Foto',text:caption||'Neues Verlaufsfoto',photoKey:key});
-  save();openPlantFile(id);toast('Verlaufsfoto gespeichert');
+  /* Das ERSTE Verlaufsfoto einer Pflanze ohne Titelbild wird gleich das
+     Titelbild. Die Anzeige hätte es ohnehin als Ersatz gezeigt (coverPhotoFor);
+     hier wird daraus ein echtes, das mitsynct und in die KI-Akte kommt. Ein
+     bereits gesetztes Titelbild wird nie überschrieben. */
+  let promoted=false;
+  if(!photoCache[id]){
+    await putPhoto(id,data);
+    state.photoMeta[id]={plantId:id,date:today(),caption:caption||'Titelbild',cover:true};
+    promoted=true;
+  }
+  save();renderPlants();openPlantFile(id);
+  toast(promoted?'Verlaufsfoto gespeichert – auch als Titelbild übernommen':'Verlaufsfoto gespeichert');
 }
 
 /* Bulk import from the phone's gallery: pick several photos at once and store
@@ -1881,10 +2411,12 @@ function updateHealthFromFile(id){
 
 function openPlantFile(id){
   const p=plant(id);if(!p)return;
+  closeFertFile();
   const h=healthFor(id),pf=profileFor(id);
   const custom=(state.customPlants||[]).find(x=>x.id===id);
   const statuses=HEALTH_STATUSES;
   const ts=defs.filter(d=>d.plantId===id);
+  const cover=coverPhotoFor(id),cal=feedingCalendarFor(id),strip=gjStripHTML(id);
   const timeline=plantTimeline(id);
   const photos=Object.entries(state.photoMeta||{}).filter(([k,m])=>m.plantId===id&&!m.cover&&photoCache[k])
     .sort((a,b)=>(b[1].date||'').localeCompare(a[1].date||''));
@@ -1904,13 +2436,21 @@ function openPlantFile(id){
       </section>
 
       <section class="fp"><h3>📷 Titelbild</h3>
-        ${photoCache[id]?`<img src="${photoCache[id]}" alt="${esc(p.name)}" style="width:100%;height:180px;object-fit:cover;border-radius:12px;margin-bottom:8px">`:'<div class="empty">Noch kein Titelbild</div>'}
+        ${cover?`<img src="${cover.src}" alt="${esc(p.name)}" style="width:100%;height:180px;object-fit:cover;border-radius:12px;margin-bottom:8px">`:'<div class="empty">Noch kein Titelbild</div>'}
+        ${cover&&cover.fallback?`<p class="meta" style="margin:0 0 8px">Kein eigenes Titelbild gesetzt – gezeigt wird das neueste Verlaufsfoto.</p>`:''}
         <div class="capture-row">
           <button class="btn" onclick="quickPhoto('${id}')">📷 Aufnehmen</button>
           <button class="btn soft" onclick="chooseCover('${id}')">Aus Galerie</button>
+          ${cover&&cover.fallback?`<button class="btn soft" onclick="promoteCover('${id}','${cover.key}')">Als Titelbild übernehmen</button>`:''}
           ${photoCache[id]?`<button class="btn danger" onclick="deleteCover('${id}')">Löschen</button>`:''}
         </div>
       </section>
+
+      ${strip?`<section class="fp full"><h3>🗓️ Gartenjahr</h3>
+        <p class="meta" style="margin-top:0">Was bei dieser Pflanze übers Jahr ansteht. Balken tippen springt zur Aufgabe.${
+          cal?` Düngeperiode ${esc(cal.window)}${cal.open?'':` – ruht, weiter ab ${fmt(cal.resumes)}`}.`:''}</p>
+        ${strip}
+      </section>`:''}
 
       ${custom?`<section class="fp full"><h3>🏷️ Pflanze bearbeiten ${custom.fromKi?'<span class="mini">von der KI erkannt – bitte prüfen</span>':''}</h3>
         <div class="form-grid">
@@ -1948,7 +2488,7 @@ function openPlantFile(id){
       </section>
 
       <section class="fp full"><h3>📅 Pflegeplan</h3>
-        <div class="task-list">${ts.length?ts.map(taskHTML).join(''):'<div class="empty">Keine Aufgaben hinterlegt.</div>'}</div>
+        <div class="task-list">${ts.length?ts.map(d=>taskHTML(d,true)).join(''):'<div class="empty">Keine Aufgaben hinterlegt.</div>'}</div>
         ${suppressedFor(id).length?`<h3 style="margin-top:16px;font-size:.95rem">Ausgesetzte Aufgaben</h3>
           <div class="journal">${suppressedFor(id).map(([tid,s])=>`<div class="j-row">
             <div class="date">seit ${fmt(s.since)}</div>
@@ -1968,13 +2508,21 @@ function openPlantFile(id){
 
       <section class="fp full"><h3>🕰️ Verlauf</h3>
         ${timeline.length?`<div class="timeline">${timeline.slice(0,120).map(o=>`<div class="tl-item ${o.type==='Gesundheit'?'health':o.type==='Behandlung'?'treatment':o.type==='Krankheit'?'problem':''}">
-          <div class="when">${fmt(o.date)} · ${esc(o.type)}</div>
-          <div>${esc(o.text)}</div>
+          <div class="when">${fmt(o.date)} · ${esc(o.type)}${o.ids&&o.ids.length>1?` · ${o.ids.length} Befunde zusammengefasst`:''}</div>
+          <div style="white-space:pre-line">${escLinked(o.text)}</div>
           ${!o.readonly?`<button class="link-danger" onclick="deleteObservation('${o.id}','${id}')">Löschen</button>`:''}
         </div>`).join('')}</div>`:'<div class="empty">Noch keine Einträge.</div>'}
       </section>
 
     </div></div></div>`;
+  /* Erst nach dem Einfügen steht die echte Breite fest; die Taktdichte der
+     Jahresleiste hängt daran. Bewusst `setTimeout` und nicht
+     `requestAnimationFrame`: rAF feuert in einem nicht sichtbaren Tab gar nicht,
+     und die Akte kann durchaus im Hintergrund neu aufgebaut werden (Sync,
+     Foto-Import). Die Leiste bliebe dann auf der Schätzbreite stehen.
+     `getBoundingClientRect` erzwingt das Layout selbst, ein Frame ist also
+     ohnehin nicht nötig. */
+  setTimeout(gjMeasure,0);
 }
 /* Correct a plant the KI created (or that you added yourself). Editing clears
    the "needs review" flag — your version is the authoritative one from then on,
@@ -2250,9 +2798,13 @@ async function resetApp(){
    base64 image data included separately so text reasoning stays light. */
 function buildPlantDossier(id){
   const p=plant(id);
-  const care=defs.filter(d=>d.plantId===id).map(d=>{const s=taskState(d.id);
+  const care=defs.filter(d=>d.plantId===id).map(d=>{const s=taskState(d.id),f=fertilizerInfo(d);
     return {task:d.title,type:d.id.split(':')[1],intervalDays:d.interval,activeMonths:d.months,
-      lastDone:s.last||null,nextDue:s.next||null,note:d.note||''}});
+      lastDone:s.last||null,nextDue:s.next||null,note:d.note||'',
+      // Ruht die Aufgabe gerade? Der Lauf soll das nicht aus activeMonths
+      // herleiten müssen — hergeleitet wird es falsch, und zwar in Richtung
+      // „düngen ist immer eine Option".
+      dormantUntil:(f&&f.dormant)?f.resumes:null}});
   const history=plantTimeline(id).map(o=>({date:o.date,type:o.type,text:o.text}));
   /* One entry per Drive file. A cover is a byte-copy of the photo it was made
      from and the two keys now share a single Drive file, so without this the
@@ -2294,6 +2846,13 @@ function buildPlantDossier(id){
     currentHealth:healthFor(id),
     profile:profileFor(id),
     careSchedule:care,
+    /* Der Düngekalender dieser Pflanze: in welchen Monaten sie überhaupt Nahrung
+       aufnimmt, und welches Produkt in welcher Phase dran ist. Ohne dieses Feld
+       musste der Lauf das Fenster aus `activeMonths` rekonstruieren und tat es
+       nicht — deshalb konnte im September eine Düngeempfehlung für ein Gehölz
+       herauskommen, dessen Periode im Juni endet. `open: false` heißt: keine
+       Dosierung, sondern der Satz, wann es wieder losgeht. */
+    feedingCalendar:feedingCalendarFor(id),
     /* What actually went on the plant, kept apart from the prose. `plantTimeline`
        joins title, note and fertilizer into one sentence — fine to read, useless
        to reason with. The run has to know that a slow-release went on in June and
@@ -2409,6 +2968,118 @@ async function exportDossier(){
 function esc(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function toast(t){const e=document.getElementById('toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),2600)}
 
+/* ------------------------------------------------------- Verweise im Text --- */
+/* „Compo Blaukorn, 10 ml auf 5 l" ist eine Anweisung, deren Gegenstand eine
+   eigene Seite hat: NPK, Dosierung, das Foto der Packung. Bis v61 hieß der Weg
+   dorthin — Namen merken, Reiter wechseln, in der Liste suchen. Jetzt ist der
+   Name im Text der Knopf.
+
+   Der Text wird ZUERST escapt und dann in EINEM Durchlauf ersetzt; `replace`
+   liest keine Ersetzung erneut, also kann kein Treffer in einem eingefügten
+   Attribut landen. Längere Namen zuerst, damit „Naturen Bio Tomatendünger" nicht
+   an „Tomaten" zerbricht. Kurze Namen (< 4 Zeichen) bleiben außen vor: sie
+   träfen mitten in Wörtern. */
+const reEsc=s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+let refIdxCache=null,refIdxKey='';
+function refIndex(){
+  const key=plants.map(p=>p.id+p.name).join('|')+'##'+fertilizers().map(f=>f.id+f.name).join('|');
+  if(refIdxCache&&refIdxKey===key)return refIdxCache;
+  const items=[];
+  plants.filter(p=>p.id!=='garten').forEach(p=>items.push({text:p.name,kind:'plant',id:p.id}));
+  fertilizers().forEach(f=>items.push({text:f.name,kind:'fert',id:f.id}));
+  const map=new Map();
+  items.filter(i=>String(i.text||'').trim().length>=4)
+    .sort((a,b)=>String(b.text).length-String(a.text).length)
+    .forEach(i=>{const k=esc(String(i.text).trim());if(!map.has(k))map.set(k,i)});
+  refIdxCache={map,re:map.size?new RegExp([...map.keys()].map(reEsc).join('|'),'g'):null};
+  refIdxKey=key;
+  return refIdxCache;
+}
+/* Nur auf bereits escapten Text anwenden. Roher Text hier hinein wäre eine
+   XSS-Lücke, und die Namen kämen aus einer KI-Datei aus Drive. */
+function linkRefs(escaped){
+  const {map,re}=refIndex();
+  if(!re)return escaped;
+  return String(escaped).replace(re,m=>{
+    const i=map.get(m);
+    if(!i)return m;
+    return `<button type="button" class="ref ref-${i.kind}" title="${i.kind==='plant'?'Pflanzenakte öffnen':'Details zum Produkt'}" onclick="${i.kind==='plant'?'openPlantFile':'openFertilizer'}('${i.id}')">${m}</button>`;
+  });
+}
+function escLinked(s){return linkRefs(esc(s))}
+/* Ein Produkt, das die App selbst gewählt hat — hier ist die id schon bekannt,
+   also braucht es die Namenssuche nicht. */
+function fertRefHTML(f){
+  return f&&f.id
+    ? `<button type="button" class="ref ref-fert" title="Details zum Produkt" onclick="openFertilizer('${f.id}')">${esc(f.name)}</button>`
+    : esc(f&&f.name||'');
+}
+/* Springt in den Reiter, in dem das Produkt wirklich steht — Kalk liegt unter
+   „Diverses", nicht unter „Dünger" — und öffnet die Detailkarte. */
+function openFertilizer(id){
+  const f=fertilizers().find(x=>x.id===id);
+  if(!f){toast('Dieses Produkt steht nicht mehr im Bestand');return}
+  closePlantFile();
+  switchView((f.type||'Dünger')==='Dünger'?'duenger':'diverses');
+  editFertilizer(id);
+}
+
+/* ------------------------------------------------------------- Titelbild ---- */
+/* Eine Pflanze mit sechs Verlaufsfotos, aber ohne gesetztes Titelbild, zeigte
+   „Kein Foto" — ausgerechnet die am besten dokumentierte Pflanze sah aus wie die
+   undokumentierte. Ersatzweise steht das NEUESTE Verlaufsfoto ein.
+
+   Reine Anzeige: es wird nichts gespeichert, photoMeta bleibt unberührt, und ein
+   echtes Titelbild gewinnt weiterhin. Wer den Ersatz behalten will, übernimmt ihn
+   in der Pflanzenakte mit einem Klick. */
+function coverPhotoFor(id){
+  if(photoCache[id])return {src:photoCache[id],key:id,fallback:false};
+  const hit=Object.entries(state.photoMeta||{})
+    .filter(([k,m])=>m&&m.plantId===id&&!m.cover&&photoCache[k])
+    .sort((a,b)=>(b[1].date||'').localeCompare(a[1].date||''))[0];
+  return hit?{src:photoCache[hit[0]],key:hit[0],fallback:true}:null;
+}
+async function promoteCover(id,key){
+  const data=photoCache[key];if(!data||!plant(id))return;
+  const m=state.photoMeta[key]||{};
+  await putPhoto(id,data);
+  state.photoMeta[id]={plantId:id,date:m.date||today(),caption:'Titelbild',cover:true};
+  save();renderPlants();openPlantFile(id);toast('Titelbild übernommen');
+}
+
+/* ------------------------------------------------- KI-Befunde zusammenfassen */
+/* Ein Lauf, der drei Fotos derselben Tomate auswertet, legt drei Befunde an. Als
+   drei Karten gelesen sagen sie größtenteils dasselbe, und das Zusammenfassen
+   bleibt am Leser hängen.
+
+   Gruppiert wird deshalb in der ANSICHT, nicht im Speicher: jeder Befund behält
+   seine id, denn daran hängen die Gelesen-Marker und die Zusammenführung über
+   zwei Geräte. Würde beim Schreiben zusammengelegt, verlöre die Listen-Merge in
+   cloud-sync.js (Ganzsatz-Ersetzung nach id) beim Zusammentreffen zweier Geräte
+   einen der beiden Absätze.
+
+   Zusammengelegt wird nur innerhalb EINES Tages. Ein am nächsten Morgen erneut
+   bestätigtes Problem ist eine Bestätigung, kein Wiederholen — die gehört
+   gelesen. */
+function kiParas(s){return String(s||'').split(/\n{2,}/).map(x=>x.trim()).filter(Boolean)}
+function kiNorm(s){return String(s||'').toLowerCase().replace(/[^a-zäöüß0-9]+/g,' ').trim()}
+function groupKiFindings(list){
+  const order=[],by=new Map();
+  (list||[]).forEach(o=>{
+    if(!o)return;
+    const k=`${o.plantId}|${o.date}`;
+    let g=by.get(k);
+    if(!g){g={plantId:o.plantId,date:o.date,ids:[],paras:[],seen:new Set()};by.set(k,g);order.push(g)}
+    g.ids.push(o.id);
+    kiParas(o.text).forEach(p=>{
+      const n=kiNorm(p);
+      if(n&&!g.seen.has(n)){g.seen.add(n);g.paras.push(p)}
+    });
+  });
+  return order.map(g=>({plantId:g.plantId,date:g.date,ids:g.ids,
+    parts:g.paras.length,text:g.paras.join('\n\n')}));
+}
+
 /* ---------------------------------------------------------------- wiring ---- */
 document.getElementById('nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b)switchView(b.dataset.view)});
 document.getElementById('plantFile').addEventListener('click',e=>{if(e.target.id==='plantFile')closePlantFile()});
@@ -2431,6 +3102,9 @@ async function startApp(){
   dedupeKiFindings();
   cleanupV12(false);
   initializeCareTasks();
+  // Nach initializeCareTasks, damit auch frisch angelegte Termine im Fenster
+  // landen: holt gespeicherte Düngetermine zurück in ihre Periode (v62).
+  clampScheduledTasks();
   if(!state.migrated)migrateLegacy();
   renderAll();
   restoreView();

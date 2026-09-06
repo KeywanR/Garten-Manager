@@ -47,9 +47,11 @@ unter „Scheduled" nirgends. Sie ist eine **Claude-Code-Cloud-Routine**:
 - Cron `0 2 * * *` (**UTC**) = 04:00 Wien in der Sommerzeit. Der Cron folgt der
   Zeitumstellung NICHT: ab Ende Oktober läuft er um 03:00 Wien, bis jemand ihn
   auf `0 3 * * *` zieht. Dazu kommen ein paar Minuten Stagger der Plattform.
-- Modell: `claude-opus-5`. Der Lauf ist urteilslastig — Foto gegen Verlauf lesen,
-  zwanzig Stopp-Signale gleichzeitig halten, Kleingedrucktes von einer gewölbten
-  Flasche entziffern. Sonnet hat das am 12. August nicht zuverlässig getragen.
+- Modell: `claude-opus-5` (am 5. September 2026 gegen die laufende Routine
+  geprüft — `session_context.model` und `config.model` stimmen beide überein).
+  Der Lauf ist urteilslastig — Foto gegen Verlauf lesen, zwanzig Stopp-Signale
+  gleichzeitig halten, Kleingedrucktes von einer gewölbten Flasche entziffern.
+  Sonnet hat das am 12. August nicht zuverlässig getragen.
 - Konto riahi@iiasa.ac.at
 - Aus Claude Code erreichbar über das `RemoteTrigger`-Tool (`/schedule`)
 
@@ -105,6 +107,12 @@ Es gibt mehrere Ordner namens „Garten-Manager". Niemals per Namenssuche gehen.
   `needsReassessment: true` — die App hat die beiden Zeitstempel dafür schon
   verglichen. `userEdited.what` sagt dir, *was* beigetragen wurde; `lastKiReview`
   ist reine Information.
+- je Pflanze `feedingCalendar` — **das Düngefenster dieser Pflanze**: `months`
+  (in welchen Monaten sie überhaupt Nahrung aufnimmt), `window` als Klartext,
+  `phases` (welches Produkt in welcher Monatsspanne), `open` (nimmt sie GERADE
+  auf) und `resumes` (ab wann wieder, wenn geschlossen). Das ist bindend, siehe
+  4d. Ist das Feld `null`, hat die Pflanze gar keine Düngeaufgabe.
+  In `careSchedule` trägt jede ruhende Aufgabe zusätzlich `dormantUntil`.
 - je Pflanze `feedingLog` — **was tatsächlich auf die Pflanze gegangen ist**:
   `[{date, product, task, note}]`, neueste zuerst, höchstens 20. Das ist nicht
   dasselbe wie `timeline`, in der dieselbe Information zu einem Satz verklebt
@@ -171,7 +179,9 @@ und normal weiterarbeiten. Ein fehlendes Wetter darf den Lauf **nie** abbrechen.
 ## 2. Was schon ausgewertet ist
 
 Alle Dateien `gartenmanager-ki-diagnose.json` im Datenordner lesen und alle
-`sourcePhoto`-Werte sammeln → **BEREITS_AUSGEWERTET**.
+`sourcePhoto`-Werte **sowie alle Einträge aus `sourcePhotos`-Arrays** sammeln →
+**BEREITS_AUSGEWERTET**. Wird das Array übersehen, gelten die Fotos eines
+zusammengefassten Eintrags als unbearbeitet und werden erneut diagnostiziert.
 
 **Achtung:** Google Drive erlaubt mehrere Dateien mit identischem Namen im
 selben Ordner, und genau so ist es hier gewollt — jeder Lauf legt eine weitere
@@ -281,13 +291,29 @@ auf Kosten des Nutzers.
 Ein solcher Eintrag braucht **kein** `sourcePhoto`; es geht um die Eingabe des
 Nutzers, nicht um ein Foto. Pflicht sind `id` und `plantId`.
 
-## 4c. Düngen — nur womit er wirklich düngen kann
+## 4c. Düngen — nur in der Periode, und nur womit er wirklich düngen kann
 
-Die App bringt eine eingebaute, saisonale Empfehlung je Pflanze mit
-(`fertilizerPlans` in `app.js`): sie nennt eine **Sorte** („kaliumbetonter
-Tomatendünger") und eine grobe Dosierung, und schaltet im Juni von
-stickstoff- auf kaliumbetont um. Das ist die fachliche Anforderung — kein
-Produkt.
+**Zuerst das Fenster, dann das Produkt.** `feedingCalendar.open === false` heißt:
+diese Pflanze nimmt gerade keine Nahrung auf. Dann gibt es keine Dosierung,
+keinen Produktnamen und keinen `proposePurchase` für sie — die richtige Antwort
+ist ein Satz, wann es wieder losgeht (`resumes`). Die App zeigt außerhalb der
+Periode selbst kein Produkt an; eine Empfehlung von dir wäre der einzige Weg,
+auf dem doch eine Düngung angeraten würde.
+
+Das ist nicht Kosmetik. Stickstoff im August treibt weichen Austrieb, der bis
+zum Frost nicht ausreift — beim Winterschneeball (Fenster März–Juni) genau der
+Fall, der v62 ausgelöst hat.
+
+Willst du das Fenster ändern, weil die Bestimmung der Pflanze das hergibt, dann
+über `proposePlan` → `changeTasks` mit neuen `months`. Der Nutzer bestätigt es,
+und die App rechnet ab dann mit dem neuen Fenster. Am Fenster vorbei zu
+empfehlen ist der eine Weg, der nicht offensteht.
+
+Innerhalb der Periode bringt die App eine eingebaute, saisonale Empfehlung je
+Pflanze mit (`fertilizerPlans` in `app.js`, sichtbar als `feedingCalendar.phases`):
+sie nennt eine **Sorte** („kaliumbetonter Tomatendünger") und eine grobe
+Dosierung, und schaltet im Juni von stickstoff- auf kaliumbetont um. Das ist die
+fachliche Anforderung — kein Produkt.
 
 Deine Aufgabe ist das fehlende Stück dazwischen: **die Anforderung auf den
 Bestand abbilden.** Rätst du zum Düngen, dann
@@ -456,6 +482,28 @@ ist, und womit in der Zwischenzeit gedüngt wird. Genau hier ist die eingebaute
 Empfehlung der App still gefährlich — sie nennt Brennnesseljauche für fast alles
 Gemüse vor Juni, ohne zu wissen, ob welche da ist. Du weißt es.
 
+### Abstand zwischen zwei Düngungen — das macht die App
+
+Seit v62 zieht die App nach jeder tatsächlichen Gabe die **übrigen**
+Düngeaufgaben derselben Pflanze nach, wenn sie dadurch zu dicht lägen. Der
+Mindestabstand ist der kürzere der beiden Rhythmen. Verschoben wird nur nach
+hinten, und zwei Aufgaben werden absichtlich in Ruhe gelassen: bei **getrennten
+Monatsfenstern** (Frühjahrs- und Herbst-Rasendünger sind zwei Ereignisse, kein
+Konflikt) und bei **gemeinsamem `planId`** — dann hast du die enge Folge selbst
+so entworfen, und die App respektiert das.
+
+Für dich heißt das dreierlei:
+
+1. **Ein verschobener Termin ist kein Fehler.** Findest du im `timeline` einen
+   Eintrag „Düngeabstand angepasst", hat die App das getan, nicht der Nutzer.
+   Schlag nicht vor, ihn zurückzustellen.
+2. **Willst du zwei Gaben bewusst eng aufeinander** (Startgabe, dann Nachschub),
+   gib beiden Aufgaben denselben `planId` im selben `proposePlan` — sonst zieht
+   die App die zweite auseinander.
+3. **Der Abstand ist gedeckt, die Menge nicht.** Dass zwei Gaben weit genug
+   auseinanderliegen, sagt nichts darüber, ob die Dosis stimmt. Der `feedingLog`
+   bleibt deine Quelle dafür.
+
 ### Was zurückkommt, wenn er gedüngt hat
 
 Hakt der Nutzer eine Düngung mit **„✓ mit Notiz"** ab, trägt der `history`-
@@ -582,6 +630,22 @@ trotzdem falsch:
 - Du willst die Arbeit an einen Agenten delegieren, im Hintergrund weiterlaufen
   lassen oder auf eine spätere Fortsetzung warten — **stopp**. Selbst machen,
   jetzt, notfalls mit weniger Fotos. Die Session endet mit deiner Antwort.
+- Du willst zum Düngen raten, obwohl `feedingCalendar.open` für diese Pflanze
+  `false` ist — **stopp**. Die Periode ist zu. Nenn `resumes`, sonst nichts.
+  Hältst du das Fenster für falsch, ändere es über `changeTasks`, statt daran
+  vorbei zu empfehlen.
+- Du willst einen Termin zurückstellen, den die App als „Düngeabstand
+  angepasst" verschoben hat — **stopp**. Das war der Mindestabstand nach einer
+  echten Gabe, keine Unordnung.
+- Du schlägst zwei Düngeaufgaben vor, die bewusst eng aufeinanderfolgen sollen,
+  gibst ihnen aber keinen gemeinsamen `planId` — **stopp**. Ohne ihn zieht die
+  App die zweite auseinander, und deine Reihenfolge ist weg.
+- Du willst für dieselbe Pflanze einen zweiten Eintrag in denselben Lauf
+  schreiben, weil es ein zweites Foto war — **stopp**. Ein Eintrag, eine
+  `observation`, `sourcePhotos` als Array.
+- Du willst beschreiben, was seit gestern gleich geblieben ist — **stopp**.
+  Sag, was sich verändert hat, oder ausdrücklich, dass sich nichts verändert
+  hat. Dieselbe Beschreibung zum vierten Mal ist keine Bestätigung.
 - Du willst zum Düngen raten, ohne ein Produkt aus `fertilizers[]` zu nennen
   oder einen `proposePurchase` zu stellen — **stopp**. „Düngen" allein ist
   keine Anweisung, die jemand ausführen kann.
@@ -604,6 +668,37 @@ trotzdem falsch:
 - Du hast einen Vorschlag mit `comment` gelesen und willst ihn übergehen —
   **stopp**. Der Nutzer hat dir geantwortet; das ist dieselbe Verbindlichkeit
   wie eine Frage in „Neue Beobachtung".
+
+## 6b. Ein Eintrag je Pflanze und Lauf
+
+Drei neue Fotos einer Tomate ergaben bisher drei Einträge, und der Nutzer las im
+Tagesbericht dreimal beinahe dasselbe. **Schreib je Pflanze EINEN Eintrag** — mit
+einer `observation`, in der Fotos, Beobachtung des Nutzers und Pflegeplan-Prüfung
+zusammengefasst sind, statt in drei Absätzen, die einander zur Hälfte
+wiederholen.
+
+Damit ein solcher Eintrag trotzdem mehrere Fotos aus der Warteschlange nimmt,
+gibt es **`sourcePhotos`** — ein Array von Dateinamen neben dem alten
+`sourcePhoto` für den Einzelfall:
+
+```json
+{"id":"ki-2026-09-05-tomaten","plantId":"tomaten",
+ "sourcePhotos":["tomaten_2026-09-04.jpg","tomaten_2026-09-05.jpg"],
+ "observation":"…"}
+```
+
+Beim Sammeln von BEREITS_AUSGEWERTET (Abschnitt 2) **beide Felder lesen** —
+`sourcePhoto` und alle Einträge aus `sourcePhotos`. Wird das Array übersehen,
+gelten die Fotos als unbearbeitet und werden morgen erneut ausgewertet.
+
+Was NICHT zusammengefasst wird: verschiedene Pflanzen (je Pflanze ein Eintrag)
+und verschiedene Tage. Bestätigst du heute ein Problem von gestern, ist das eine
+Bestätigung und gehört ausdrücklich gesagt — die App legt Einträge desselben
+Tages zusammen, über Tage hinweg aber nie.
+
+Sag in der `observation`, was sich **verändert** hat, nicht was gleich geblieben
+ist. „Die Vergilbung hat sich seit dem 2. September nicht weiter ausgebreitet"
+ist ein Satz; die Beschreibung derselben Vergilbung zum vierten Mal ist keiner.
 
 ## 7. Schreiben
 
@@ -646,8 +741,8 @@ beide:
 
 | | Foto-Eintrag | Korrektur-Eintrag (4b) |
 | --- | --- | --- |
-| `id` | `ki-<YYYY-MM-DD>-<dateiname ohne endung>` | `ki-<YYYY-MM-DD>-<plantId>-review` |
-| `sourcePhoto` | **Pflicht** — fehlt sie, wird das Foto morgen erneut ausgewertet | entfällt |
+| `id` | `ki-<YYYY-MM-DD>-<plantId>` | `ki-<YYYY-MM-DD>-<plantId>-review` |
+| `sourcePhoto` / `sourcePhotos` | **Pflicht** — fehlt sie, wird das Foto morgen erneut ausgewertet; bei mehreren Fotos derselben Pflanze das Array (6b) | entfällt |
 | `reviewOf` | entfällt | **Pflicht**: `"plantEdit"` |
 | `plantId` | **Pflicht**, sobald die Pflanze bekannt ist | **Pflicht** |
 
@@ -718,7 +813,12 @@ erfordern.
 
 ## Bericht
 
-Höchstens acht Zeilen. Zuerst und deutlich: **welche Fragen des Nutzers du
+Höchstens acht Zeilen, **eine Zeile je Pflanze, nicht je Foto**. Was du heute
+schon in der `observation` derselben Pflanze gesagt hast, wiederholst du hier
+nicht — der Bericht sagt, was der Lauf getan hat, nicht noch einmal, was er
+gefunden hat.
+
+Zuerst und deutlich: **welche Fragen des Nutzers du
 beantwortet hast** (oder „keine offenen Fragen"). Dann eine **Wetterzeile**:
 Wasserbilanz der letzten 7 Tage in mm, Regen in der Prognose, Hitzetage, ab
 Oktober Frostrisiko — und was das fürs Gießen heißt, Kübel getrennt genannt.
