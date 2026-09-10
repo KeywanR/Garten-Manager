@@ -43,10 +43,14 @@
 (function () {
   const CLIENT_ID = '1025384887951-8ckp0ehbqj6v9e6u6n0nrl9m4sult7ts.apps.googleusercontent.com';
   const REDIRECT_URI = 'https://keywanr.github.io/Garten-Manager/';
-  // drive.file: write own files. drive.readonly: additionally READ files created
-  // by others — needed for the KI diagnosis inbox, which Claude's Drive
-  // connector writes (files from other apps are invisible under drive.file).
-  const SCOPE = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly';
+  // drive: full read/write of the user's Drive, including files shared with
+  // them. drive.file does NOT cross the sharing boundary: the data file was
+  // created under the owner's account, so a second member (the folder shared
+  // to them) could read it via drive.readonly but never write it — every push
+  // would fail with 403. Joint use of one folder needs the broad scope. It
+  // also covers the KI diagnosis inbox, which Claude's Drive connector
+  // writes (files from other apps are invisible under drive.file).
+  const SCOPE = 'https://www.googleapis.com/auth/drive';
   const FOLDER_NAME = 'Garten-Manager';
   /* The data folder is pinned by ID, not found by name. There is more than one
      folder called "Garten-Manager" in this Drive — the other holds the app's
